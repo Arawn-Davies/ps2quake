@@ -40,18 +40,14 @@ viddef_t	vid;				// global video state
 static int verbose=0;
 int ignorenext;
 
-#ifdef _NTSC
-#define	BASEWIDTH	640
-#define	BASEHEIGHT  224
-#endif
-#ifdef _VESA
-#define	BASEWIDTH	640
-#define	BASEHEIGHT  480
-#endif
-#ifdef _PAL //PAL
-#define	BASEWIDTH	640
-#define	BASEHEIGHT  265
-#endif
+// Internal software-render resolution. The GS hardware-scales this up to the
+// DISPLAY_W x DISPLAY_H output (bilinear), so the EE software rasterizer only
+// has to fill BASEWIDTH*BASEHEIGHT pixels. Rendering at half the display res
+// (exact 2x, same 1.43:1 aspect) roughly halves rasterization cost -- the GS
+// does the upscale for free. Bump these toward 640x448 for sharpness, lower
+// for speed.
+#define	BASEWIDTH	320
+#define	BASEHEIGHT	224
 
 // GS display size: the BASEWIDTH x BASEHEIGHT software frame is GS-scaled to
 // fill this (NTSC 640x448, as in the working doom port -- shows in PCSX2 and

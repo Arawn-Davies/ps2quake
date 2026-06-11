@@ -24,8 +24,17 @@ fi
 # bin/ must exist for the linker output (EE_BIN = bin/quake.elf).
 mkdir -p "$ROOT/src/bin"
 
-echo ">> running 'make ${*:-all}' in src/ ..."
-docker run --rm -v "$ROOT":/work -w /work/src "$IMAGE" make "$@"
+# Force a clean build for the default target: incremental make over the
+# WSL2/Docker bind mount can't be trusted to relink (mtime granularity means
+# a fresh .o can look older than the ELF, so the link is silently skipped and
+# you ship a stale binary). A full rebuild of this small tree costs seconds.
+if [ "$#" -eq 0 ]; then
+    echo ">> running 'make clean && make' in src/ ..."
+    docker run --rm -v "$ROOT":/work -w /work/src "$IMAGE" sh -c 'make clean >/dev/null 2>&1; make'
+else
+    echo ">> running 'make $*' in src/ ..."
+    docker run --rm -v "$ROOT":/work -w /work/src "$IMAGE" make "$@"
+fi
 
 if [ "${1:-}" != "clean" ]; then
     echo ">> done: src/bin/quake.elf"

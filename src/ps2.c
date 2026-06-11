@@ -1,16 +1,22 @@
 
 #include "ps2.h"
 #include "pad.h"
-extern u32 usbd_irx;
-extern u32 size_usbd_irx;
 
-extern u32 usbhdfsd_irx;
-extern u32 size_usbhdfsd_irx;
+/* fjtrujy's ps2_drivers (bundled in ps2sdk/ports) handles loading the correct
+   modern IOP modules and binding their EE-side RPC. We use it for cdfs (read
+   id1/ from the boot disc) and the USB keyboard/mouse, instead of shipping our
+   own stale IRX. init_keyboard_driver/init_mouse_driver pull in usbd and call
+   PS2KbdInit/PS2MouseInit themselves, so IN_Init must not init them again. */
+#include <ps2_cdfs_driver.h>
+#include <ps2_keyboard_driver.h>
+#include <ps2_mouse_driver.h>
 
-extern u32 iomanx_irx;
-extern u32 size_iomanx_irx;
+/* Whether the USB keyboard/mouse came up -- read by in_ps2.c so the per-frame
+   input RPCs are skipped (rather than blocking) when a device isn't present. */
+int ps2_kbd_ok = 0;
+int ps2_mouse_ok = 0;
 
- 
+
 void IOP_reset() // resets IOP and apply sbv patches.	
 {	
 	SifInitRpc(0);
@@ -44,60 +50,28 @@ void IOP_reset() // resets IOP and apply sbv patches.
 
 void loadmodules()
 {
-   int ret, id;
+   int ret;
 
+   /* Pad path: classic rom modules drive libpad (see Setup_Pad). */
    ret = SifLoadModule("rom0:SIO2MAN", 0, NULL);
-   if(ret < 0){
-          printf("Error loading rom0:XSIO2MAN\n");
-              }
-   /*ret = SifLoadModule("rom0:MCMAN", 0, NULL);
-   if(ret < 0){
-          printf("Error loading rom0:MCMAN\n");
-              }
-   ret = SifLoadModule("rom0:MCSERV", 0, NULL);
-   if(ret < 0){
-          printf("Error loading rom0:MCSERV\n");
-          }*/
-  #ifdef _IOPRESET
-   if ((id = SifExecModuleBuffer(&iomanx_irx, size_iomanx_irx, 0, NULL, &ret)) < 0) {
-		printf("Error loading iomanx\n");
-	}
-  #endif            
-   ret = SifLoadModule("rom0:PADMAN", 0, NULL);
-   if(ret < 0){
-          printf("Error loading rom0:XPADMAN\n");
-              }
-  
-  /* ret = SifLoadModule("rom0:LIBSD", 0, NULL);
-   if(ret < 0){
-          printf("Error loading rom0:LIBSD\n");
-              }*/
-      
-    if ((id = SifExecModuleBuffer(&usbd_irx, size_usbd_irx, 0, NULL, &ret)) < 0) {
-		printf("Error loading usbd\n");
-	}
-    if ((id = SifExecModuleBuffer(&usbhdfsd_irx, size_usbhdfsd_irx, 0, NULL, &ret)) < 0) {
-		printf("Error loading usbhdfsd\n");
-	}
-	 
-    /*if ((id = SifExecModuleBuffer(&ps2kbd_irx, size_ps2kbd_irx, 0, NULL, &ret)) < 0) {
-		scr_printf("Error loading ps2kbd\n");
-	}
-	 if ((id = SifExecModuleBuffer(&ps2mouse_irx, size_ps2mouse_irx, 0, NULL, &ret)) < 0) {
-		scr_printf("Error loading ps2mouse\n");
-	}
-	if ((id = SifExecModuleBuffer(&ps2snd_irx, size_ps2snd_irx, 0, NULL, &ret)) < 0) {
-		scr_printf("Error loading ps2snd\n");
-	}*/
-	ret = SifLoadModule("mass:irx/ps2kbd.irx", 0, NULL);
-	if (ret < 0) {
-		printf("Failed to load module: PS2KBD");
-		//SleepThread();
-	}	
+   if(ret < 0)
+          printf("Error loading rom0:SIO2MAN\n");
 
-	ret = SifLoadModule("mass:irx/ps2mouse.irx", 0, NULL);
-	if (ret < 0) {
-		printf("Failed to load module: PS2MOUSE");
-	//	SleepThread();
-	}
+   ret = SifLoadModule("rom0:PADMAN", 0, NULL);
+   if(ret < 0)
+          printf("Error loading rom0:PADMAN\n");
+
+   /* Disc filesystem: registers "cdfs:" so COM_InitFilesystem can read id1/. */
+   if (init_cdfs_driver() != CDFS_INIT_STATUS_IRX_OK)
+          printf("Error loading cdfs driver\n");
+
+   /* USB keyboard/mouse (true => also bring up the usbd dependency). These
+      embed the matching modern IRX and call PS2KbdInit/PS2MouseInit. */
+   ps2_kbd_ok   = (init_keyboard_driver(true) == KEYBOARD_INIT_STATUS_OK);
+   if(!ps2_kbd_ok)
+          printf("PS2 keyboard not available\n");
+
+   ps2_mouse_ok = (init_mouse_driver(true) == MOUSE_INIT_STATUS_OK);
+   if(!ps2_mouse_ok)
+          printf("PS2 mouse not available\n");
 }

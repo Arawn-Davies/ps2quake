@@ -73,15 +73,12 @@ EE_OBJS =\
 	in_ps2.o \
 	ps2_gs.o \
 	vid_ps2.o \
-    obj/usbd_irx.o \
-	obj/usbhdfsd_irx.o \
-	obj/iomanx_irx.o \
 	ps2.o \
-	pad.o 
+	pad.o
 EE_BIN = bin/quake.elf
 
-EE_LIBS =   -lmouse -lkbd -lm -lc -lkernel -lpad
-EE_INCS :=  -I$(PS2SDK)/sbv/include -I$(PS2SDK)/ports/include/SDL -I$(PS2SDK)/ee/include -I$(PS2DEV)/ee/ee/include
+EE_LIBS =   -lps2_drivers -lmouse -lkbd -lm -lc -lkernel -lpad
+EE_INCS :=  -I$(PS2SDK)/sbv/include -I$(PS2SDK)/ports/include -I$(PS2SDK)/ports/include/SDL -I$(PS2SDK)/ee/include -I$(PS2DEV)/ee/ee/include
 EE_CFLAGS = -std=gnu11 -fcommon -DNEWLIB_PORT_AWARE -g -Dstricmp=strcasecmp -funroll-loops -fomit-frame-pointer -fexpensive-optimizations
 EE_LDFLAGS := -L$(PS2SDK)/sbv/lib -L$(PS2SDK)/ports/lib
 
@@ -114,12 +111,5 @@ clean:
 run:
 	ps2client -h 10.0.0.10 execee host:$(EE_BIN)
 
-obj/usbd_irx.s:
-	bin2s irx/usbd.irx obj/usbd_irx.s usbd_irx
-obj/usbhdfsd_irx.s:
-	bin2s irx/usbhdfsd.irx obj/usbhdfsd_irx.s usbhdfsd_irx
-obj/iomanx_irx.s:
-	bin2s irx/iomanx.irx obj/iomanx_irx.s iomanx_irx	
-	
 include $(PS2SDK)/samples/Makefile.pref
 include Makefile.eeglobal

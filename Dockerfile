@@ -9,7 +9,8 @@
 # repo and runs `make` in src/.
 FROM ghcr.io/ps2dev/ps2dev:latest
 
-RUN apk add --no-cache make bash
+# make/bash drive the toolchain; xorriso builds the bootable ISO (make_iso.sh).
+RUN apk add --no-cache make bash xorriso
 
 # The Makefile lives in src/; the repo is mounted at /work by build.sh.
 WORKDIR /work/src

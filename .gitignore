@@ -3,6 +3,9 @@
 src/bin/
 src/ps2_packer/packed_quake.elf
 
+# ISO staging / output (make_iso.sh)
+dist/
+
 # Note: tracked reference binaries (original_quake-*.elf, pad/*.elf, mouse/*.elf)
 # and the pre-generated IRX blobs (src/obj/*.s) are intentionally NOT ignored.
 

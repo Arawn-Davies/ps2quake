@@ -1777,7 +1777,8 @@ void COM_InitFilesystem (void)
 // start up with GAMENAME by default (id1)
 //
 #ifdef _EE
-	COM_AddGameDirectory (va("%s/"GAMENAME, "mass:") );
+	COM_AddGameDirectory (va("%s/"GAMENAME, "cdfs:") );
+	//COM_AddGameDirectory (va("%s/"GAMENAME, "mass:") );
 	//COM_AddGameDirectory (va("%s/"GAMENAME, "mc0:QUAKE") );
 #else
 	COM_AddGameDirectory (va("%s/"GAMENAME, basedir) );

@@ -38,32 +38,31 @@ float   old_mouse_x, old_mouse_y;
 cvar_t		_windowed_mouse = {"_windowed_mouse","0", true};
 cvar_t		m_filter = {"m_filter","0", true};
 
+/* Set by loadmodules() (ps2.c) via ps2_drivers: whether the USB keyboard/mouse
+   came up. The modules and their EE RPC are already initialised there, so here
+   we only configure the devices -- and only when present, otherwise the
+   per-frame read RPCs below would block forever waiting on a missing server. */
+extern int ps2_kbd_ok;
+extern int ps2_mouse_ok;
+
 void IN_Init (void)
 {
-	if(PS2KbdInit() == 0)
-    {
-		printf("Failed to initialise PS2Kbd\n");
-	//	SleepThread();
-    }
+	if(ps2_kbd_ok)
+		PS2KbdSetReadmode(PS2KBD_READMODE_RAW);
 
-	if(PS2MouseInit() == 0)
-    {
-		printf("Failed to initialise PS2Mouse\n");
-	//	SleepThread();
-    }
-  
-	PS2KbdSetReadmode(PS2KBD_READMODE_RAW);
-	
-	PS2MouseSetBoundary(0, 639, 0, 479);
-	PS2MouseSetReadMode(PS2MOUSE_READMODE_ABS);
-	PS2MouseSetPosition(320, 240);
-	PS2MouseSetAccel(2.0);
-	PS2MouseSetThres(4);
+	if(ps2_mouse_ok)
+	{
+		PS2MouseSetBoundary(0, 639, 0, 479);
+		PS2MouseSetReadMode(PS2MOUSE_READMODE_ABS);
+		PS2MouseSetPosition(320, 240);
+		PS2MouseSetAccel(2.0);
+		PS2MouseSetThres(4);
+	}
 
 	Setup_Pad();
 	Wait_Pad_Ready();
-	   
-	mouse_x = 320; 
+
+	mouse_x = 320;
 	mouse_y = 240;
 	//mouse_avail = 1;
 }
@@ -77,6 +76,9 @@ void IN_Commands (void)
 {
     
     qboolean isKeyDown = false;
+
+	if(!ps2_kbd_ok)
+		return;
 
 	PS2KbdReadRaw(&key);
 	
@@ -118,7 +120,10 @@ void IN_Commands (void)
 		case PS2_PAUSE: Key_Event(K_PAUSE, isKeyDown); break;
 		default:Key_Event(us_keymap[key.key], isKeyDown);break;
 	}
-	
+
+	if(!ps2_mouse_ok)
+		return;
+
 	PS2MouseRead(&mouse);
 
 	if(mouse.buttons > 0)
@@ -200,7 +205,8 @@ void IN_Move (usercmd_t *cmd)
 {
     padRead(0, 0, &rjoy);
 
-	PS2MouseRead(&mouse);
+	if(ps2_mouse_ok)
+		PS2MouseRead(&mouse);
 float rjoy_h2=0, ljoy_v2=0;
 	//0-122.5-127.5-132.5-255
        if(rjoy.rjoy_h<120){rjoy_h2=rjoy.rjoy_h;}else if(rjoy.rjoy_h>137){rjoy_h2=rjoy.rjoy_h;}else{rjoy_h2=122;}

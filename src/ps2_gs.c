@@ -6,21 +6,22 @@
 	Copyright (c) Nicolas Plourde - july 2004
 */
 
+#include <kernel.h>
 #include "ps2_gs.h"
- 
+
 /*
-	void ps2_flush_cache(int) - Flushes data cache
+	void ps2_flush_cache(int) - write back the data cache so the GIF DMA sees
+	what the EE just wrote (the per-frame image in put_image).
+
+	This used to be a hand-rolled "li $3,0x64; syscall" (FlushCache). That asm
+	clobbered $3 without declaring it and had no "memory" clobber, so once
+	modern GCC inlined it at -O2 it corrupted a live pointer (the 0x64 TLB
+	faults) and let the image DMA race the cache -> black screen. Use the
+	ps2sdk wrapper instead, which is a real call (implicit compiler barrier).
 */
 void ps2_flush_cache(int command)
 {
-	asm (
-			"li	$3,0x64"	"\n\t"
-			"syscall"		"\n\t"
-			:
-			:"r"(command)
-		);
-			
-	return;
+	FlushCache(command);
 }
 
 /*
@@ -239,7 +240,9 @@ void put_image(uint16 x, uint16 y, uint16 w, uint16 h, uint32 *data)
 	GIF_DATA_AD(gs_dma_buf, trxdir, GS_TRXDIR(XDIR_EE_GS));
 	SEND_GS_PACKET(gs_dma_buf);
 
-	qtotal = w*h*4;					// total number of quadwords to transfer.
+	qtotal = (w*h)/4;				// qwords to transfer: 32bpp -> 4 bytes/pixel,
+									// 4 pixels per 16-byte qword (was w*h*4, the
+									// byte count -- 16x too big, hung the DMA).
 	current = qtotal % MAX_TRANSFER;// work out if a partial buffer transfer is needed.
 	frac=1;							// assume yes.
 	if(!current)					// if there is no need for partial buffer

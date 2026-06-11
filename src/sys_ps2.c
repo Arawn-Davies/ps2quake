@@ -234,7 +234,9 @@ int Sys_FileOpenRead (char *path, int *hndl)
 	
 	i = findhandle ();
 
-	f = fioOpen(path,O_RDONLY);
+	/* Use the legacy FIO flags: newlib's O_RDONLY is 0, but the fio drivers
+	   (cdfs.irx, usbhdfsd) expect FIO_O_RDONLY (1) and reject 0. */
+	f = fioOpen(path,FIO_O_RDONLY);
 	if (!f)
 	{
 		*hndl = -1;
@@ -256,7 +258,7 @@ int Sys_FileOpenWrite (char *path)
 	
 	i = findhandle ();
 
-	f = fioOpen(path,O_WRONLY | O_CREAT);
+	f = fioOpen(path,FIO_O_WRONLY | FIO_O_CREAT);
 	//FIXME
 	//if(!f)
 	//{

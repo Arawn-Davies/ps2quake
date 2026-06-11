@@ -1,0 +1,15 @@
+# Build artifacts
+*.o
+src/bin/
+src/ps2_packer/packed_quake.elf
+
+# Note: tracked reference binaries (original_quake-*.elf, pad/*.elf, mouse/*.elf)
+# and the pre-generated IRX blobs (src/obj/*.s) are intentionally NOT ignored.
+
+# Legacy VCS metadata (removed from this repo)
+.svn/
+CVS/
+
+# Editor / OS cruft
+*.swp
+.DS_Store

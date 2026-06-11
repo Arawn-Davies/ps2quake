@@ -82,7 +82,7 @@ EE_BIN = bin/quake.elf
 
 EE_LIBS =   -lmouse -lkbd -lm -lc -lkernel -lpad
 EE_INCS :=  -I$(PS2SDK)/sbv/include -I$(PS2SDK)/ports/include/SDL -I$(PS2SDK)/ee/include -I$(PS2DEV)/ee/ee/include
-EE_CFLAGS = -g -Dstricmp=strcasecmp -funroll-loops -fomit-frame-pointer -fexpensive-optimizations
+EE_CFLAGS = -std=gnu11 -fcommon -DNEWLIB_PORT_AWARE -g -Dstricmp=strcasecmp -funroll-loops -fomit-frame-pointer -fexpensive-optimizations
 EE_LDFLAGS := -L$(PS2SDK)/sbv/lib -L$(PS2SDK)/ports/lib
 
 ifeq ($(_PAL), 1)
@@ -102,6 +102,11 @@ ifeq ($(_IOPRESET), 1)
 endif
 
 all: $(EE_BIN)
+
+# Optional: compress the ELF with ps2-packer for faster loading.
+# Needs a working host ps2-packer binary (the bundled one is i386-only and
+# will not run on modern/Alpine hosts); run separately, not part of `all`.
+pack: $(EE_BIN)
 	 ps2_packer/ps2_packer bin/quake.elf bin/packed_quake.elf
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS)

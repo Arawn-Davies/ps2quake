@@ -642,7 +642,7 @@ void _Host_Frame (float time)
 
 // keep the random time dependent
 	rand ();
-	
+
 // decide the simulation time
 	if (!Host_FilterTime (time))
 		return;			// don't run too fast, or packets will flood out

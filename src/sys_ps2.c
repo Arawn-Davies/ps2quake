@@ -32,6 +32,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <fileio.h>
 #include <signal.h>
 #include <debug.h>
+#include <timer.h>
 
 #include "quakedef.h"
 #include "errno.h"
@@ -354,11 +355,26 @@ void Sys_Quit (void)
 
 }
 
+// Wall clock from the EE COP0 cycle counter (cpu_ticks). The original port
+// derived time from a Timer0 INTC interrupt (count_time), but that interrupt
+// doesn't fire under PCSX2, so the engine clock froze after the first frame.
+// Polling cpu_ticks() always advances; we accumulate 32-bit-wrap-safe deltas
+// (the counter wraps about every 14s, far longer than a frame).
+#define EE_TICKS_PER_SEC	294912000.0		// EE core clock (~294.912 MHz)
+
 float Sys_FloatTime (void)
 {
-	static float t;
-	t = count_time/100;
-	return t;	
+	static int	inited = 0;
+	static u32	last;
+	static double	seconds = 0.0;
+	u32		now;
+
+	now = cpu_ticks();
+	if (!inited) { last = now; inited = 1; }
+	seconds += (double)(u32)(now - last) / EE_TICKS_PER_SEC;
+	last = now;
+
+	return (float)seconds;
 }
 
 char *Sys_ConsoleInput (void)

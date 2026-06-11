@@ -69,14 +69,17 @@ EE_OBJS =\
 	net_loop.o \
 	net_none.o \
 	sys_ps2.o \
-	snd_null.o \
+	snd_dma.o \
+	snd_mix.o \
+	snd_mem.o \
+	snd_ps2.o \
 	in_ps2.o \
 	vid_ps2.o \
 	ps2.o \
 	pad.o
 EE_BIN = bin/quake.elf
 
-EE_LIBS =   -lgskit -ldmakit -lps2_drivers -lmouse -lkbd -lm -lc -lkernel -lpad
+EE_LIBS =   -lgskit -ldmakit -lps2_drivers -laudsrv -lmouse -lkbd -lm -lc -lkernel -lpad
 EE_INCS :=  -I$(PS2SDK)/sbv/include -I$(PS2SDK)/ports/include -I$(PS2SDK)/ports/include/SDL -I$(GSKIT)/include -I$(PS2SDK)/ee/include -I$(PS2DEV)/ee/ee/include
 EE_CFLAGS = -std=gnu11 -fcommon -fno-aggressive-loop-optimizations -DNEWLIB_PORT_AWARE -g -Dstricmp=strcasecmp -funroll-loops -fomit-frame-pointer -fexpensive-optimizations
 EE_LDFLAGS := -L$(PS2SDK)/sbv/lib -L$(PS2SDK)/ports/lib -L$(GSKIT)/lib

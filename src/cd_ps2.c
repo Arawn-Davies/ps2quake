@@ -22,7 +22,7 @@ extern void Sys_DiscUnlock (void);
 extern cvar_t bgmvolume;
 
 #define OUT_RATE	22050			// must match snd_ps2.c SND_SPEED
-#define RING_FRAMES	22050			// ~1s of stereo slack to ride disc stalls
+#define RING_FRAMES	(OUT_RATE * 4)	// ~4s of slack to ride disc stalls
 
 static short		music_ring[RING_FRAMES * 2];
 static volatile int	ring_w = 0, ring_r = 0;
@@ -226,28 +226,50 @@ static int CD_DecodeBlock (const unsigned char *blk, int blen)
 	}
 }
 
-// Pull one block from disc and decode it. Returns frames (0 = EOF).
+// Big read-ahead buffer: one locked disc read per ~3s of audio instead of one
+// per 46ms block, so the game's CD activity rarely starves the music stream.
+static unsigned char rdbuf[64 * 1024] __attribute__((aligned(64)));
+static int rdbuf_len = 0;	// valid bytes
+static int rdbuf_off = 0;	// consumed bytes
+
+static void CD_ResetReadAhead (void)
+{
+	rdbuf_len = 0;
+	rdbuf_off = 0;
+}
+
+// Decode the next block (from the read-ahead buffer, refilling as needed).
+// Returns frames (0 = EOF).
 static int CD_DecodeSrc (void)
 {
-	static unsigned char block[2048] __attribute__((aligned(64)));
-	int n;
+	int blk;
 
-	if (wav_pos >= wav_data_end)
+	if (rdbuf_off + wav_block_align > rdbuf_len)
+	{
+		int want, avail, got;
+
+		avail = (int)(wav_data_end - wav_pos);
+		if (avail <= 8)
+			return 0;						// end of stream
+		want = (int)((sizeof(rdbuf) / wav_block_align) * wav_block_align);
+		if (want > avail)
+			want = avail;
+		got = CD_ReadAt(wav_pos, rdbuf, want);	// one big sequential read
+		if (got <= 0)
+			return 0;
+		wav_pos += got;
+		rdbuf_len = got;
+		rdbuf_off = 0;
+	}
+
+	blk = wav_block_align;
+	if (rdbuf_off + blk > rdbuf_len)
+		blk = rdbuf_len - rdbuf_off;		// final partial block
+	if (blk <= 8)
 		return 0;
 
-	n = wav_block_align;
-	if (n > (int)sizeof(block))
-		n = sizeof(block);
-	if (wav_pos + n > wav_data_end)
-		n = (int)(wav_data_end - wav_pos);
-	if (n <= 8)
-		return 0;
-
-	if (CD_ReadAt(wav_pos, block, n) <= 0)
-		return 0;
-	wav_pos += n;
-
-	src_frames = CD_DecodeBlock(block, n);
+	src_frames = CD_DecodeBlock(rdbuf + rdbuf_off, blk);
+	rdbuf_off += blk;
 	src_pos = 0;
 	return src_frames;
 }
@@ -329,6 +351,7 @@ static int CD_OpenTrack (int track)
 	src_frac  = 0.0;
 	src_frames = 0;
 	src_pos = 0;
+	CD_ResetReadAhead();
 
 	Con_Printf("CDAudio: playing track%02d.wav (%d Hz %d ch IMA-ADPCM)\n",
 		track, src_rate, wav_channels);
@@ -366,6 +389,7 @@ static void MusicThread (void *arg)
 					{
 						wav_pos = wav_data_start;
 						src_frames = src_pos = 0;
+						CD_ResetReadAhead();
 						continue;
 					}
 					playing = 0;
@@ -431,7 +455,8 @@ int CDAudio_Init (void)
 	th.stack            = music_stack;
 	th.stack_size       = sizeof(music_stack);
 	th.gp_reg           = gp;
-	th.initial_priority = 0x50;		// below game + audio feed
+	th.initial_priority = 0x30;		// above the game thread, below audio feed,
+									// so the ring gets refilled on time
 	music_tid = CreateThread(&th);
 	if (music_tid < 0)
 	{

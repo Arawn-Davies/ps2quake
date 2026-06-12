@@ -13,7 +13,8 @@
 
 // r_native.c -- float/handle-only hardware API (no PS2SDK headers needed here).
 extern void RN_Init(void);
-extern void RN_FrameBegin(float camx, float camy, float camz, float yaw);
+extern void RN_FrameBegin(float camx, float camy, float camz,
+                          float pitch, float yaw, float roll);
 extern void RN_FrameEnd(void);
 extern void RN_SetLight(int l);
 extern int  RN_TexCreate(void);
@@ -57,7 +58,7 @@ int main(int argc, char **argv)
 
     for (;;)
     {
-        RN_FrameBegin(0.0f, 0.0f, 0.0f, 0.0f);   // at origin, looking toward -Z
+        RN_FrameBegin(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);   // origin, looking -Z
         RN_TexBind(tex);
         RN_SetLight(128);                         // full bright (1.0 modulate)
         // Pushed back to z=-120 so the whole triangle fits on screen with a

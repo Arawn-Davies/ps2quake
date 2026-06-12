@@ -1108,6 +1108,16 @@ void R_RenderView (void)
 	int		dummy;
 	int		scale;
 
+#ifdef R_HARDWARE
+	{
+		// Hardware path: draw the world on the GS via the native feeder instead
+		// of the EE software rasterizer. Presents the frame itself (RN_FrameEnd).
+		extern void RGS_RenderWorld (void);
+		RGS_RenderWorld ();
+		return;
+	}
+#endif
+
 	// The original asserts R_RenderView runs within 10 KB of where R_Init
 	// captured the stack -- an old assumption that misfires here (the menu->game
 	// path reaches this at a different depth than the attract demo). The EE main

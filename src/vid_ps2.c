@@ -79,9 +79,10 @@ static GSTEXTURE	tex;			// BASEWIDTH x BASEHEIGHT PSM_T8 + CT32 CLUT
 // backend. M2b replaces the 3D world with real GS geometry; the 2D path here
 // becomes just the HUD overlay.
 extern void RN_Init(void);
-extern void RN_FrameBegin(float, float, float, float);
+extern void RN_FrameBegin(float, float, float, float, float, float);
 extern void RN_FrameEnd(void);
 extern void RN_Draw2D(const void *rgba, int w, int h);
+extern int  rgs_drew_world;		// r_gs.c -- set when R_RenderView drew the 3D world
 #endif
 
 void ResetFrameBuffer(void)
@@ -194,7 +195,11 @@ void	VID_Init (unsigned char *palette)
 
 	VID_SetPalette(palette);
 #ifdef R_HARDWARE
-	RN_Init();			// native GS/VU1 bring-up (owns the GS instead of gsKit)
+	{
+		extern void RGS_Init (void);
+		RN_Init();		// native GS/VU1 bring-up (owns the GS instead of gsKit)
+		RGS_Init();		// world feeder: dev texture + state
+	}
 #else
 	VID_InitGS();
 #endif
@@ -213,13 +218,21 @@ void	VID_Update (vrect_t *rects)
 
 #ifdef R_HARDWARE
 	{
-		// Palette-expand the 8-bit software frame to RGBA and blit it fullscreen
-		// through the native GS path. (M2b moves the 3D world off this onto real
-		// GS geometry; this stays as the 2D/HUD overlay.)
+		// If R_RenderView already drew + presented the 3D world this frame (M2b),
+		// VID_Update has nothing to do -- the HUD overlay comes in M2c. Otherwise
+		// (menus / console / loading, no 3D this frame) present the 8-bit software
+		// frame palette-expanded to RGBA, fullscreen, through the native GS path.
 		static unsigned int rgba[BASEWIDTH * BASEHEIGHT] __attribute__((aligned(128)));
 		static unsigned int pal32[256];
 		const unsigned char *src = (const unsigned char *) vid.buffer;
 		int n = vid.width * vid.height, k;
+
+		(void) rects;
+		if (rgs_drew_world)
+		{
+			rgs_drew_world = 0;
+			return;
+		}
 
 		for (k = 0; k < 256; ++k)
 			pal32[k] = (unsigned int) pal_r[k]
@@ -229,10 +242,9 @@ void	VID_Update (vrect_t *rects)
 		for (k = 0; k < n; ++k)
 			rgba[k] = pal32[src[k]];
 
-		RN_FrameBegin(0.0f, 0.0f, 0.0f, 0.0f);
+		RN_FrameBegin(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 		RN_Draw2D(rgba, vid.width, vid.height);
 		RN_FrameEnd();
-		(void) rects;
 		return;
 	}
 #else

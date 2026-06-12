@@ -163,12 +163,12 @@ void RN_Init(void)
     tex2d.info.components  = TEXTURE_COMPONENTS_RGBA;
     tex2d.info.function    = TEXTURE_FUNCTION_DECAL;
 
-    // hfov = 2*atan(right/near). near=8; right tuned wider than 90 deg. 4:3.
-    // ~90deg FOV (matches Doom's BSP visibility, for the edge-hole test) + a near
-    // plane pulled in to 2 (the VU drops near-crossing tris, so closer near =
-    // fewer vanishing walls / floor holes).
-    create_view_screen(s_proj, graph_aspect_ratio(), -2.0f, 2.0f, -1.5f, 1.5f,
-                       2.0f, 32768.0f);
+    // Match the known-good ps2sdk vu1 sample: square +-3 extents with near=1.0
+    // (aspect handled by graph_aspect_ratio()). near=2 + pre-squashed 4:3 read
+    // far too zoomed. ~143 deg horizontal -- wide for now so orientation is
+    // legible; dial toward Quake's fov / drive from r_refdef.fov_x later.
+    create_view_screen(s_proj, graph_aspect_ratio(), -3.0f, 3.0f, -3.0f, 3.0f,
+                       1.0f, 32768.0f);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,13 +269,16 @@ void RN_TexBind(int h)
 }
 
 // --- float-only geometry API -----------------------------------------------
-void RN_FrameBegin(float camx, float camy, float camz, float yaw)
+// Camera takes full Euler angles (radians) now: Doom passed pitch=roll=0, Quake
+// needs pitch (look up/down). Angles are applied by create_world_view.
+void RN_FrameBegin(float camx, float camy, float camz,
+                   float pitch, float yaw, float roll)
 {
     MATRIX m_world, m_view;
     VECTOR cam_pos, cam_rot, zero;
 
-    cam_pos[0]=camx; cam_pos[1]=camy; cam_pos[2]=camz; cam_pos[3]=1.0f;
-    cam_rot[0]=0.0f; cam_rot[1]=yaw;  cam_rot[2]=0.0f; cam_rot[3]=1.0f;
+    cam_pos[0]=camx;  cam_pos[1]=camy; cam_pos[2]=camz; cam_pos[3]=1.0f;
+    cam_rot[0]=pitch; cam_rot[1]=yaw;  cam_rot[2]=roll; cam_rot[3]=1.0f;
     zero[0]=zero[1]=zero[2]=0.0f; zero[3]=1.0f;
 
     create_local_world(m_world, zero, zero);

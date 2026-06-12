@@ -1,4 +1,4 @@
-# Quake — PlayStation 2 (ps2oom)
+# Quake — PlayStation 2 (ps2quake)
 
 A native **PlayStation 2** port of id Software's **Quake**. Boots from a CD/DVD
 image, runs in **PCSX2** and on real hardware — video, sound, music, and

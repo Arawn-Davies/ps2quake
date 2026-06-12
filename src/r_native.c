@@ -153,12 +153,13 @@ void RN_Init(void)
     init_draw_env();
     set_prim_lod_clut();
 
-    // VRAM for the 2D UI framebuffer (320x200 image in a 512x256 PSM32 area).
+    // VRAM for the 2D UI / full-frame blit. 512x512 holds the Quake software
+    // frame (up to 384x268) as well as Doom's 320x200.
     tex2d.width   = 512;
     tex2d.psm     = GS_PSM_32;
-    tex2d.address = graph_vram_allocate(512, 256, GS_PSM_32, GRAPH_ALIGN_BLOCK);
+    tex2d.address = graph_vram_allocate(512, 512, GS_PSM_32, GRAPH_ALIGN_BLOCK);
     tex2d.info.width      = draw_log2(512);
-    tex2d.info.height     = draw_log2(256);
+    tex2d.info.height     = draw_log2(512);
     tex2d.info.components  = TEXTURE_COMPONENTS_RGBA;
     tex2d.info.function    = TEXTURE_FUNCTION_DECAL;
 

@@ -100,6 +100,20 @@ ifeq ($(_IOPRESET), 1)
 	 EE_CFLAGS += -D_IOPRESET
 endif
 
+# Hardware renderer (GS/VU1/DMA) -- opt-in: build with `make R_HARDWARE=1`.
+# Links the native core (r_native.c + the draw_3D.vsm VU1 program) and routes
+# video through it instead of gsKit. Default build is unchanged (software).
+EE_DVP ?= $(PS2SDK)/../dvp/bin/dvp-as
+ifeq ($(R_HARDWARE), 1)
+	 EE_OBJS  += r_native.o draw_3D.o
+	 EE_CFLAGS += -DR_HARDWARE
+	 EE_LIBS  += -ldraw -lgraph -lmath3d -lpacket2 -ldma
+endif
+
+# VU1 microprogram -> object with VU1Draw3D_CodeStart/End in .vudata.
+%.o: %.vsm
+	$(EE_DVP) $< -o $@
+
 all: $(EE_BIN)
 
 # Optional: compress the ELF with ps2-packer for faster loading.

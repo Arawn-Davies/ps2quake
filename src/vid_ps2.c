@@ -72,6 +72,18 @@ static unsigned char pal_r[256], pal_g[256], pal_b[256];
 static GSGLOBAL	*gsGlobal = NULL;
 static GSTEXTURE	tex;			// BASEWIDTH x BASEHEIGHT PSM_T8 + CT32 CLUT
 
+#ifdef R_HARDWARE
+// M2a: present through the native VU1+DMA+GS core (r_native.c) instead of gsKit.
+// For now the software frame is palette-expanded to RGBA and blitted fullscreen
+// via RN_Draw2D -- this retires gsKit and proves the engine runs on the hardware
+// backend. M2b replaces the 3D world with real GS geometry; the 2D path here
+// becomes just the HUD overlay.
+extern void RN_Init(void);
+extern void RN_FrameBegin(float, float, float, float);
+extern void RN_FrameEnd(void);
+extern void RN_Draw2D(const void *rgba, int w, int h);
+#endif
+
 void ResetFrameBuffer(void)
 {
 	if (d_pzbuffer)
@@ -181,7 +193,11 @@ void	VID_Init (unsigned char *palette)
 	vid.aspect = ((float)vid.height / (float)vid.width) * (320.0 / 240.0);
 
 	VID_SetPalette(palette);
+#ifdef R_HARDWARE
+	RN_Init();			// native GS/VU1 bring-up (owns the GS instead of gsKit)
+#else
 	VID_InitGS();
+#endif
 }
 
 void	VID_Shutdown (void)
@@ -192,10 +208,36 @@ void	VID_Shutdown (void)
 void	VID_Update (vrect_t *rects)
 {
 	extern int scr_fullupdate;
-	unsigned int *clut;
-	int i;
 
 	scr_fullupdate = 0;
+
+#ifdef R_HARDWARE
+	{
+		// Palette-expand the 8-bit software frame to RGBA and blit it fullscreen
+		// through the native GS path. (M2b moves the 3D world off this onto real
+		// GS geometry; this stays as the 2D/HUD overlay.)
+		static unsigned int rgba[BASEWIDTH * BASEHEIGHT] __attribute__((aligned(128)));
+		static unsigned int pal32[256];
+		const unsigned char *src = (const unsigned char *) vid.buffer;
+		int n = vid.width * vid.height, k;
+
+		for (k = 0; k < 256; ++k)
+			pal32[k] = (unsigned int) pal_r[k]
+					 | ((unsigned int) pal_g[k] << 8)
+					 | ((unsigned int) pal_b[k] << 16)
+					 | (0x80u << 24);
+		for (k = 0; k < n; ++k)
+			rgba[k] = pal32[src[k]];
+
+		RN_FrameBegin(0.0f, 0.0f, 0.0f, 0.0f);
+		RN_Draw2D(rgba, vid.width, vid.height);
+		RN_FrameEnd();
+		(void) rects;
+		return;
+	}
+#else
+	unsigned int *clut;
+	int i;
 
 	// Rebuild the CLUT from the current palette each frame (cheap, 256 entries)
 	// so palette effects (damage flash, item pickup, powerups) show. GS RGBA32
@@ -233,6 +275,7 @@ void	VID_Update (vrect_t *rects)
 	gsKit_queue_exec(gsGlobal);
 	gsKit_sync_flip(gsGlobal);
 	gsKit_TexManager_nextFrame(gsGlobal);
+#endif	// R_HARDWARE
 }
 
 /*

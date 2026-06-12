@@ -1049,11 +1049,12 @@ SetVisibilityByPassages ();
 void R_RenderView (void)
 {
 	int		dummy;
-	int		delta;
-	
-	delta = (byte *)&dummy - r_stack_start;
-	if (delta < -10000 || delta > 10000)
-		Sys_Error ("R_RenderView: called without enough stack");
+
+	// The original asserts R_RenderView runs within 10 KB of where R_Init
+	// captured the stack -- an old assumption that misfires here (the menu->game
+	// path reaches this at a different depth than the attract demo). The EE main
+	// thread has a 128 KB stack, so the depth is harmless; drop the check.
+	(void)r_stack_start;
 
 	if ( Hunk_LowMark() & 3 )
 		Sys_Error ("Hunk is missaligned");

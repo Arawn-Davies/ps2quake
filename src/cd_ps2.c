@@ -53,17 +53,16 @@ static short			src_buf[8192];			// decoded source (interleaved)
 static int			src_frames = 0;			// frames held in src_buf
 static int			src_pos = 0;			// consumed frames
 
-// ---- vorbisfile callbacks: locked fio on the cdfs file descriptor ----------
+// ---- vorbisfile callbacks: raw fio on the cdfs fd. The disc lock is taken by
+//      the CALLER around the whole ov_open/ov_read/ov_clear, so a multi-step
+//      vorbis op is one atomic transaction the game can't interleave with. ----
 
 static size_t ogg_cb_read (void *ptr, size_t size, size_t nmemb, void *ds)
 {
 	int got;
 
 	(void)ds;
-	Sys_DiscLock();
 	got = fioRead(ogg_fd, ptr, (int)(size * nmemb));
-	Sys_DiscUnlock();
-
 	if (got <= 0)
 		return 0;
 	return (size_t)got / size;
@@ -74,23 +73,14 @@ static int ogg_cb_seek (void *ds, ogg_int64_t off, int whence)
 	int r;
 
 	(void)ds;
-	Sys_DiscLock();
 	r = fioLseek(ogg_fd, (int)off, whence);
-	Sys_DiscUnlock();
-
 	return (r < 0) ? -1 : 0;
 }
 
 static long ogg_cb_tell (void *ds)
 {
-	long r;
-
 	(void)ds;
-	Sys_DiscLock();
-	r = fioLseek(ogg_fd, 0, SEEK_CUR);
-	Sys_DiscUnlock();
-
-	return r;
+	return fioLseek(ogg_fd, 0, SEEK_CUR);
 }
 
 static int ogg_cb_close (void *ds)
@@ -122,18 +112,18 @@ static void ring_put (short l, short r)
 
 static void CD_CloseFile (void)
 {
+	Sys_DiscLock();
 	if (vf_open)
 	{
-		ov_clear(&vf);			// uses our callbacks (which lock)
+		ov_clear(&vf);
 		vf_open = 0;
 	}
 	if (ogg_fd >= 0)
 	{
-		Sys_DiscLock();
 		fioClose(ogg_fd);
-		Sys_DiscUnlock();
 		ogg_fd = -1;
 	}
+	Sys_DiscUnlock();
 }
 
 // Pull one decoded source frame chunk into src_buf. Returns frames (0 = EOF).
@@ -144,7 +134,9 @@ static int CD_DecodeSrc (void)
 	long	ret;
 	short  *s;
 
+	Sys_DiscLock();
 	ret = ov_read(&vf, raw, sizeof(raw), 0, 2, 1, &bs);	// 16-bit signed LE
+	Sys_DiscUnlock();
 	if (ret <= 0)
 		return 0;
 
@@ -196,29 +188,37 @@ static int CD_OpenTrack (int track)
 	char		path[64];
 	vorbis_info	*vi;
 
+	int ok;
+
 	CD_CloseFile();
 
 	sprintf(path, "cdfs:/id1/music/track%02d.ogg", track);
 
+	// Hold the lock across open + header parse so the seek/read sequence is
+	// not interleaved with the game's disc access (which corrupts it on cdfs).
 	Sys_DiscLock();
 	ogg_fd = fioOpen(path, FIO_O_RDONLY);
-	Sys_DiscUnlock();
 	if (ogg_fd < 0)
 	{
+		Sys_DiscUnlock();
 		Con_Printf("CDAudio: %s not found\n", path);
 		return 0;
 	}
+	ok = (ov_open_callbacks(NULL, &vf, NULL, 0, ogg_cbs) >= 0);
+	if (ok)
+		vf_open = 1;
+	else
+	{
+		fioClose(ogg_fd);
+		ogg_fd = -1;
+	}
+	Sys_DiscUnlock();
 
-	if (ov_open_callbacks(NULL, &vf, NULL, 0, ogg_cbs) < 0)
+	if (!ok)
 	{
 		Con_Printf("CDAudio: %s is not a valid Ogg\n", path);
-		Sys_DiscLock();
-		fioClose(ogg_fd);
-		Sys_DiscUnlock();
-		ogg_fd = -1;
 		return 0;
 	}
-	vf_open = 1;
 
 	vi = ov_info(&vf, -1);
 	src_rate  = vi ? vi->rate : OUT_RATE;
@@ -264,7 +264,9 @@ static void MusicThread (void *arg)
 				{
 					if (looping)
 					{
+						Sys_DiscLock();
 						ov_pcm_seek(&vf, 0);
+						Sys_DiscUnlock();
 						src_frames = src_pos = 0;
 						continue;
 					}

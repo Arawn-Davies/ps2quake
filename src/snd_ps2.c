@@ -21,6 +21,9 @@
 extern volatile dma_t	sn;			// defined in snd_dma.c
 extern volatile dma_t  *shm;
 
+// Music mixer hook (cd_ps2.c): adds OGG music on top of the SFX chunk.
+extern void CDAudio_MixStereo16 (short *out, int frames);
+
 #define SND_SPEED		22050
 #define SND_CHANNELS	2
 #define SND_BITS		16
@@ -38,27 +41,34 @@ static char			feed_stack[16 * 1024] __attribute__((aligned(16)));
 // runs in short bursts without starving the game thread.
 static void FeedThread(void *arg)
 {
-	unsigned pos = 0;					// byte offset into shm->buffer
+	static char	mix[FEED_CHUNK] __attribute__((aligned(16)));
+	unsigned	pos = 0;				// byte offset into shm->buffer
 
 	(void)arg;
 	while (snd_running)
 	{
 		audsrv_wait_audio(FEED_CHUNK);
 
+		// Gather one chunk of mixed SFX from the ring (wrap-aware).
 		if (pos + FEED_CHUNK <= SND_BYTES)
 		{
-			audsrv_play_audio((char *)shm->buffer + pos, FEED_CHUNK);
+			memcpy(mix, (char *)shm->buffer + pos, FEED_CHUNK);
 			pos += FEED_CHUNK;
 		}
 		else
 		{
 			unsigned first = SND_BYTES - pos;	// wrap split
-			audsrv_play_audio((char *)shm->buffer + pos, first);
-			audsrv_play_audio((char *)shm->buffer, FEED_CHUNK - first);
+			memcpy(mix, (char *)shm->buffer + pos, first);
+			memcpy(mix + first, (char *)shm->buffer, FEED_CHUNK - first);
 			pos = FEED_CHUNK - first;
 		}
 		if (pos >= SND_BYTES)
 			pos -= SND_BYTES;
+
+		// Add OGG music on top (16-bit stereo -> FEED_CHUNK/4 frames).
+		CDAudio_MixStereo16((short *)mix, FEED_CHUNK / 4);
+
+		audsrv_play_audio(mix, FEED_CHUNK);
 
 		feed_bytes += FEED_CHUNK;
 	}

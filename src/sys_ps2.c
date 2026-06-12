@@ -185,15 +185,35 @@ FILE IO
 #define MAX_HANDLES 10
 int sys_handles[MAX_HANDLES];
 
+// One physical drive + non-reentrant legacy fio: serialise every disc op (game
+// file reads here AND the music streamer in cd_ps2.c) through one semaphore so
+// two threads never drive the fio RPC at once.
+static int disc_sema = -1;
+
+void Sys_DiscLock (void)
+{
+	if (disc_sema >= 0)
+		WaitSema(disc_sema);
+}
+
+void Sys_DiscUnlock (void)
+{
+	if (disc_sema >= 0)
+		SignalSema(disc_sema);
+}
+
 void inithandle (void)
 {
 	int i;
-	
-	for (i=1 ; i<MAX_HANDLES ; i++)
-	{
-		sys_handles[i] =-1;
+	ee_sema_t sema;
 
-	}
+	for (i = 1; i < MAX_HANDLES; i++)
+		sys_handles[i] = -1;
+
+	sema.init_count = 1;
+	sema.max_count  = 1;
+	sema.option     = 0;
+	disc_sema = CreateSema(&sema);
 }
 
 int findhandle (void)
@@ -218,11 +238,12 @@ filelength
 */
 int filelength (int f)
 {
-	int pos;
 	int end;
-	
-	end = fioLseek(f,0,SEEK_END);
-	pos = fioLseek(f,0,SEEK_SET);
+
+	Sys_DiscLock();
+	end = fioLseek(f, 0, SEEK_END);
+	fioLseek(f, 0, SEEK_SET);
+	Sys_DiscUnlock();
 
 	return end;
 }
@@ -236,7 +257,9 @@ int Sys_FileOpenRead (char *path, int *hndl)
 
 	/* Use the legacy FIO flags: newlib's O_RDONLY is 0, but the fio drivers
 	   (cdfs.irx, usbhdfsd) expect FIO_O_RDONLY (1) and reject 0. */
-	f = fioOpen(path,FIO_O_RDONLY);
+	Sys_DiscLock();
+	f = fioOpen(path, FIO_O_RDONLY);
+	Sys_DiscUnlock();
 	if (!f)
 	{
 		*hndl = -1;
@@ -258,7 +281,9 @@ int Sys_FileOpenWrite (char *path)
 	
 	i = findhandle ();
 
-	f = fioOpen(path,FIO_O_WRONLY | FIO_O_CREAT);
+	Sys_DiscLock();
+	f = fioOpen(path, FIO_O_WRONLY | FIO_O_CREAT);
+	Sys_DiscUnlock();
 	//FIXME
 	//if(!f)
 	//{
@@ -271,42 +296,59 @@ int Sys_FileOpenWrite (char *path)
 
 void Sys_FileClose (int handle)
 {
+	Sys_DiscLock();
 	fioClose(sys_handles[handle]);
+	Sys_DiscUnlock();
 	sys_handles[handle] = -1;
 }
 
 void Sys_FileSeek (int handle, int position)
 {
-	fioLseek (sys_handles[handle], position, SEEK_SET);
+	Sys_DiscLock();
+	fioLseek(sys_handles[handle], position, SEEK_SET);
+	Sys_DiscUnlock();
 }
 
 int Sys_FileRead (int handle, void *dest, int count)
 {
-	return fioRead(sys_handles[handle], dest, count);
+	int n;
+
+	Sys_DiscLock();
+	n = fioRead(sys_handles[handle], dest, count);
+	Sys_DiscUnlock();
+
+	return n;
 }
 
 int Sys_FileWrite (int handle, void *data, int count)
 {
-	return fioWrite(sys_handles[handle], data, count);
+	int n;
+
+	Sys_DiscLock();
+	n = fioWrite(sys_handles[handle], data, count);
+	Sys_DiscUnlock();
+
+	return n;
 }
 
 int     Sys_FileTime (char *path)
 {
-	FILE    *f;
-	
-	f = fopen(path, "rb");
-	if (f)
-	{
-		fclose(f);
-		return 1;
-	}
-	
-	return -1;
+	int	f;
+
+	Sys_DiscLock();
+	f = fioOpen(path, FIO_O_RDONLY);
+	if (f >= 0)
+		fioClose(f);
+	Sys_DiscUnlock();
+
+	return (f >= 0) ? 1 : -1;
 }
 
 void Sys_mkdir (char *path)
 {
+	Sys_DiscLock();
 	fioMkdir(path);
+	Sys_DiscUnlock();
 }
 
 

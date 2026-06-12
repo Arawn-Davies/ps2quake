@@ -40,6 +40,17 @@ cp "$ROOT/src/bin/quake.elf"   "$STAGE/QUAKE.ELF"
 cp "$pak0"                     "$STAGE/id1/PAK0.PAK"
 [ -n "$pak1" ] && cp "$pak1"   "$STAGE/id1/PAK1.PAK"
 
+# OGG music tracks for cd_ps2.c (cdfs:/id1/music/trackNN.ogg). Look in
+# <pakdir>/id1/music or <pakdir>/music. Only .ogg is needed (we decode Vorbis).
+musicsrc=""
+[ -d "$PAKDIR/id1/music" ] && musicsrc="$PAKDIR/id1/music"
+[ -d "$PAKDIR/music" ]     && musicsrc="$PAKDIR/music"
+if [ -n "$musicsrc" ] && ls "$musicsrc"/*.ogg >/dev/null 2>&1; then
+    mkdir -p "$STAGE/id1/music"
+    cp "$musicsrc"/*.ogg "$STAGE/id1/music/"
+    echo ">> staged $(ls "$STAGE/id1/music"/*.ogg | wc -l) OGG music track(s)"
+fi
+
 echo ">> building $OUT"
 mkdir -p "$ROOT/dist"
 # -as mkisofs: plain ISO9660 (level: allow our 8.3 names). PS2 cdvd/cdfs read

@@ -42,12 +42,13 @@ int ignorenext;
 
 // Internal software-render resolution. The GS hardware-scales this up to the
 // DISPLAY_W x DISPLAY_H output (bilinear), so the EE software rasterizer only
-// has to fill BASEWIDTH*BASEHEIGHT pixels. Rendering at half the display res
-// (exact 2x, same 1.43:1 aspect) roughly halves rasterization cost -- the GS
-// does the upscale for free. Bump these toward 640x448 for sharpness, lower
-// for speed.
-#define	BASEWIDTH	320
-#define	BASEHEIGHT	224
+// has to fill BASEWIDTH*BASEHEIGHT pixels. The closer this is to the 640x448
+// display, the sharper the image (less GS upscale) but the more pixels the EE
+// must rasterize. 384x268 is a ~1.67x upscale (vs 2x at 320x224) for ~1.44x the
+// fill cost; width is a multiple of 64 to keep the GS T8 texture buffer aligned.
+// Bump toward 640x448 for sharpness, drop toward 320x224 for speed.
+#define	BASEWIDTH	384
+#define	BASEHEIGHT	268
 
 // GS display size: the BASEWIDTH x BASEHEIGHT software frame is GS-scaled to
 // fill this (NTSC 640x448, as in the working doom port -- shows in PCSX2 and

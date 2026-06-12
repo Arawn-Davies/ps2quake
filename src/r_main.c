@@ -126,7 +126,9 @@ cvar_t	r_waterwarp = {"r_waterwarp","1"};
 // console, menus and crosshair are still drawn at full 320-wide resolution on
 // top, so only the (expensive) world rasterization pays the resolution cut.
 // 1 = off (full res), 2 = half (a quarter of the pixels), 3 = third. Archived.
-cvar_t	r_3dscale = {"r_3dscale","2", true};
+// Default 1: with the higher 384x268 internal res we want the 3D at full base
+// resolution; set 2 to trade sharpness back for speed.
+cvar_t	r_3dscale = {"r_3dscale","1", true};
 cvar_t	r_fullbright = {"r_fullbright","0"};
 cvar_t	r_drawentities = {"r_drawentities","1"};
 cvar_t	r_drawviewmodel = {"r_drawviewmodel","1"};
@@ -998,7 +1000,7 @@ SetVisibilityByPassages ();
 		S_ExtraUpdate ();	// don't let sound get messed up if going slow
 		VID_LockBuffer ();
 	}
-	
+
 	if (r_dspeeds.value)
 	{
 		se_time2 = Sys_FloatTime ();

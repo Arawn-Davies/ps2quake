@@ -1,0 +1,42 @@
+name: PS2 build
+
+# Builds the PS2 Quake ELF in the official ps2dev toolchain and uploads it.
+# No game data (paks/music) is embedded -- the ELF is just the GPL Quake engine
+# and reads its data from the disc at runtime -- so the artifact is safe to
+# publish. Build a disc with make_iso.sh locally (you supply PAK0.PAK).
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'src/**', 'Dockerfile', '.github/workflows/ps2.yml' ]
+  pull_request:
+    paths: [ 'src/**', '.github/workflows/ps2.yml' ]
+  workflow_dispatch:
+
+jobs:
+  ps2-elf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # checkout runs on the host so we don't need node inside the Alpine-based
+      # toolchain image; the build runs in the ps2dev image (full PS2 toolchain
+      # + gsKit/audsrv/ps2_drivers). 'make' here targets src/bin/quake.elf.
+      - name: Build quake.elf
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work/src \
+            ghcr.io/ps2dev/ps2dev:latest \
+            sh -c '
+              set -e
+              apk add --no-cache make bash >/dev/null
+              mkdir -p bin
+              make
+              mips64r5900el-ps2-elf-readelf -h bin/quake.elf | head -3
+            '
+
+      - name: Upload ELF
+        uses: actions/upload-artifact@v4
+        with:
+          name: quake-ps2
+          path: src/bin/quake.elf
+          if-no-files-found: error

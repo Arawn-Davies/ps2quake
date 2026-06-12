@@ -1,0 +1,27 @@
+# Standalone M1 test ELF for the GS hardware renderer core (r_native.c +
+# draw_3D.vsm). Does NOT touch the quake.elf build. Build from src/:
+#   ./build.sh -f Makefile.rntest      (or:  make -f Makefile.rntest)
+# Output: bin/rntest.elf
+
+EE_BIN  = bin/rntest.elf
+EE_OBJS = rntest_main.o r_native.o draw_3D.o
+
+# Hardware-renderer libs (libkernel + libc are appended by Makefile.eeglobal).
+EE_LIBS = -ldraw -lgraph -lmath3d -lpacket2 -ldma
+
+# VU1 assembler (assembles draw_3D.vsm -> draw_3D.o with the .vudata section).
+EE_DVP ?= $(PS2SDK)/../dvp/bin/dvp-as
+
+all: $(EE_BIN)
+
+clean:
+	rm -f $(EE_BIN) $(EE_OBJS)
+
+# VU1 microprogram -> object exporting VU1Draw3D_CodeStart/End. Defined before
+# the include so it wins over Makefile.eeglobal's generic %.o:%.c rule (and its
+# prerequisite, draw_3D.vsm, is the only one that exists anyway).
+%.o: %.vsm
+	$(EE_DVP) $< -o $@
+
+include $(PS2SDK)/samples/Makefile.pref
+include Makefile.eeglobal

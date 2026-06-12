@@ -436,7 +436,14 @@ r_refdef.viewangles[2]=    0;
 	r_viewleaf = Mod_PointInLeaf (r_origin, cl.worldmodel);
 
 	r_dowarpold = r_dowarp;
-	r_dowarp = r_waterwarp.value && (r_viewleaf->contents <= CONTENTS_WATER);
+	// The low-res lever renders the world into its own buffer; the water warp
+	// uses a separate full-width warp buffer that can't follow that redirect,
+	// so suppress it while the low-res pass is active (extern from r_main.c).
+	{
+		extern qboolean r_lowres_active;
+		r_dowarp = r_waterwarp.value && !r_lowres_active
+				&& (r_viewleaf->contents <= CONTENTS_WATER);
+	}
 
 	if ((r_dowarp != r_dowarpold) || r_viewchanged || lcd_x.value)
 	{

@@ -121,6 +121,12 @@ cvar_t	r_timegraph = {"r_timegraph","0"};
 cvar_t	r_graphheight = {"r_graphheight","10"};
 cvar_t	r_clearcolor = {"r_clearcolor","2"};
 cvar_t	r_waterwarp = {"r_waterwarp","1"};
+// Low-res 3D lever: render the 3D world into a separate buffer at 1/N the view
+// resolution, then nearest-expand it into the on-screen view rect. The HUD,
+// console, menus and crosshair are still drawn at full 320-wide resolution on
+// top, so only the (expensive) world rasterization pays the resolution cut.
+// 1 = off (full res), 2 = half (a quarter of the pixels), 3 = third. Archived.
+cvar_t	r_3dscale = {"r_3dscale","2", true};
 cvar_t	r_fullbright = {"r_fullbright","0"};
 cvar_t	r_drawentities = {"r_drawentities","1"};
 cvar_t	r_drawviewmodel = {"r_drawviewmodel","1"};
@@ -200,6 +206,7 @@ void R_Init (void)
 	Cvar_RegisterVariable (&r_ambient);
 	Cvar_RegisterVariable (&r_clearcolor);
 	Cvar_RegisterVariable (&r_waterwarp);
+	Cvar_RegisterVariable (&r_3dscale);
 	Cvar_RegisterVariable (&r_fullbright);
 	Cvar_RegisterVariable (&r_drawentities);
 	Cvar_RegisterVariable (&r_drawviewmodel);
@@ -1046,9 +1053,58 @@ SetVisibilityByPassages ();
 	Sys_HighFPPrecision ();
 }
 
+// --- Low-res 3D buffer + EE composite (the r_3dscale lever) ---------------
+// Set by R_RenderView while the world is being rasterized into the low-res
+// buffer; R_SetupFrame (r_misc.c) reads it to suppress the water warp, which
+// renders through its own full-width buffer and can't follow the redirect.
+qboolean	r_lowres_active = false;
+
+static byte	*r_lowres_buffer = NULL;	// separate low-res world target
+static int	 r_lowres_bufsize = 0;
+
+extern int		sb_lines;				// status-bar lines (screen.c)
+extern vrect_t	scr_vrect;				// on-screen 3D view rect (full res)
+
+/*
+===============
+R_ExpandToView
+
+Nearest-neighbour expand the low-res world image (srcw x srch at srcx,srcy in
+r_lowres_buffer, stride srcstride) into vid.buffer at the full-resolution view
+rect scr_vrect. The ratio is 1/r_3dscale in each axis, but we map generically
+(per-axis index tables) so any view size / scale stays exact.
+===============
+*/
+static void R_ExpandToView (int srcx, int srcy, int srcw, int srch, int srcstride)
+{
+	static int	colmap[MAXWIDTH];
+	int			dstw = scr_vrect.width;
+	int			dsth = scr_vrect.height;
+	int			dx, dy;
+
+	if (dstw <= 0 || dsth <= 0 || srcw <= 0 || srch <= 0)
+		return;
+	if (dstw > MAXWIDTH)
+		dstw = MAXWIDTH;
+
+	for (dx = 0 ; dx < dstw ; dx++)
+		colmap[dx] = srcx + (dx * srcw) / dstw;
+
+	for (dy = 0 ; dy < dsth ; dy++)
+	{
+		byte	*src = r_lowres_buffer + (srcy + (dy * srch) / dsth) * srcstride;
+		byte	*dst = (byte *)vid.buffer
+				+ (scr_vrect.y + dy) * vid.rowbytes + scr_vrect.x;
+
+		for (dx = 0 ; dx < dstw ; dx++)
+			dst[dx] = src[colmap[dx]];
+	}
+}
+
 void R_RenderView (void)
 {
 	int		dummy;
+	int		scale;
 
 	// The original asserts R_RenderView runs within 10 KB of where R_Init
 	// captured the stack -- an old assumption that misfires here (the menu->game
@@ -1065,7 +1121,86 @@ void R_RenderView (void)
 	if ( (long)(&r_warpbuffer) & 3 )
 		Sys_Error ("Globals are missaligned");
 
-	R_RenderView_ ();
+	scale = (int)r_3dscale.value;
+	if (scale < 1)
+		scale = 1;
+	if (scale > 4)
+		scale = 4;
+
+	if (scale <= 1)
+	{
+		r_lowres_active = false;
+		R_RenderView_ ();
+		return;
+	}
+
+	// Ensure the low-res target exists (sized generously; the rasterizer only
+	// ever touches the r_refdef.vrect sub-region).
+	{
+		int	need = vid.width * vid.height;
+		if (!r_lowres_buffer || r_lowres_bufsize < need)
+		{
+			if (r_lowres_buffer)
+				free (r_lowres_buffer);
+			r_lowres_buffer = malloc (need);
+			r_lowres_bufsize = need;
+		}
+	}
+
+	{
+		byte	*save_buffer   = vid.buffer;
+		int		 save_rowbytes = vid.rowbytes;
+		vrect_t	 lowvrect;
+		int		 sx, sy, sw, sh, sstride;
+
+		// Redirect the EE rasterizer at the low-res buffer. screenwidth and
+		// d_viewbuffer are taken from vid.rowbytes/vid.buffer by D_SetupFrame
+		// (inside R_RenderView_), and d_scantable from vid.rowbytes via the
+		// R_ViewChanged below -- so swapping these two covers all of them.
+		r_lowres_active = true;
+		vid.buffer   = r_lowres_buffer;
+		vid.rowbytes = vid.width / scale;
+
+		// Low-res projection: scale the whole view (and the status-bar reserve)
+		// down by 'scale'. R_SetVrect re-applies the view-size fraction, giving
+		// an r_refdef.vrect that is exactly scr_vrect / scale.
+		lowvrect.x = 0;
+		lowvrect.y = 0;
+		lowvrect.width  = vid.width  / scale;
+		lowvrect.height = vid.height / scale;
+		R_ViewChanged (&lowvrect, sb_lines / scale, vid.aspect);
+
+		// R_ViewChanged set r_viewchanged; clear it so R_SetupFrame (inside
+		// R_RenderView_) doesn't re-run R_ViewChanged at full vid.width and
+		// overwrite the low-res vrect while the buffer stride is the low-res one.
+		r_viewchanged = false;
+
+		R_RenderView_ ();
+
+		sx = r_refdef.vrect.x;
+		sy = r_refdef.vrect.y;
+		sw = r_refdef.vrect.width;
+		sh = r_refdef.vrect.height;
+		sstride = vid.rowbytes;
+
+		// Restore the full-res context for the 2D overlays and expand the world.
+		vid.buffer   = save_buffer;
+		vid.rowbytes = save_rowbytes;
+		r_lowres_active = false;
+
+		R_ExpandToView (sx, sy, sw, sh, sstride);
+
+		// Put r_refdef back to the on-screen view so anything that reads it
+		// between frames (and next frame's setup) sees full-res values.
+		{
+			vrect_t	fullvrect;
+			fullvrect.x = 0;
+			fullvrect.y = 0;
+			fullvrect.width  = vid.width;
+			fullvrect.height = vid.height;
+			R_ViewChanged (&fullvrect, sb_lines, vid.aspect);
+		}
+	}
 }
 
 /*

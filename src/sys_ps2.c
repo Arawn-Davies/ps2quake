@@ -488,6 +488,20 @@ int main (int argc, char **argv)
 
 		oldtime = newtime;
 
+        // Benchmark probe: average rendered FPS to the log every 2s. We run
+        // below the 60Hz vsync cap, so this reflects raw render performance.
+        {
+            static int   fps_n = 0;
+            static float fps_t = 0;
+            fps_n++;
+            if (newtime - fps_t >= 2.0f)
+            {
+                printf("FPS: %.1f\n", (float)fps_n / (newtime - fps_t));
+                fps_n = 0;
+                fps_t = newtime;
+            }
+        }
+
         Host_Frame (time);
     }
 	stop_ps2_timer();

@@ -38,6 +38,7 @@ static volatile int	playing = 0;
 static volatile int	paused = 0;
 static volatile int	looping = 0;
 static volatile int	want_track = 0;			// >=2 requests the thread to open
+static int			cur_track = 0;			// track currently open (for reopen-loop)
 static int			music_tid = -1;
 static char			music_stack[16 * 1024] __attribute__((aligned(16)));
 
@@ -53,9 +54,11 @@ static short			src_buf[8192];			// decoded source (interleaved)
 static int			src_frames = 0;			// frames held in src_buf
 static int			src_pos = 0;			// consumed frames
 
-// ---- vorbisfile callbacks: raw fio on the cdfs fd. The disc lock is taken by
-//      the CALLER around the whole ov_open/ov_read/ov_clear, so a multi-step
-//      vorbis op is one atomic transaction the game can't interleave with. ----
+// ---- vorbisfile callbacks: STREAM-ONLY (no seek/tell). cdfs reads work but
+//      its seeking (esp. the seek-to-end ov_open does to count samples) is
+//      unreliable, so we present the file as a non-seekable stream -- vorbis
+//      then just decodes forward, which is all playback needs. Looping is done
+//      by closing and reopening the track. Raw fio under the caller's lock. ----
 
 static size_t ogg_cb_read (void *ptr, size_t size, size_t nmemb, void *ds)
 {
@@ -68,28 +71,13 @@ static size_t ogg_cb_read (void *ptr, size_t size, size_t nmemb, void *ds)
 	return (size_t)got / size;
 }
 
-static int ogg_cb_seek (void *ds, ogg_int64_t off, int whence)
-{
-	int r;
-
-	(void)ds;
-	r = fioLseek(ogg_fd, (int)off, whence);
-	return (r < 0) ? -1 : 0;
-}
-
-static long ogg_cb_tell (void *ds)
-{
-	(void)ds;
-	return fioLseek(ogg_fd, 0, SEEK_CUR);
-}
-
 static int ogg_cb_close (void *ds)
 {
 	(void)ds;
 	return 0;	// fd is closed by CD_CloseFile so locking stays in one place
 }
 
-static ov_callbacks ogg_cbs = { ogg_cb_read, ogg_cb_seek, ogg_cb_close, ogg_cb_tell };
+static ov_callbacks ogg_cbs = { ogg_cb_read, NULL, ogg_cb_close, NULL };
 
 // ---- ring buffer (single producer = music thread, single consumer = mixer) -
 
@@ -204,21 +192,24 @@ static int CD_OpenTrack (int track)
 		Con_Printf("CDAudio: %s not found\n", path);
 		return 0;
 	}
-	ok = (ov_open_callbacks(NULL, &vf, NULL, 0, ogg_cbs) >= 0);
-	if (ok)
-		vf_open = 1;
-	else
+	cur_track = track;
+
 	{
-		fioClose(ogg_fd);
-		ogg_fd = -1;
+		int ovret = ov_open_callbacks(NULL, &vf, NULL, 0, ogg_cbs);
+		ok = (ovret >= 0);
+		if (ok)
+			vf_open = 1;
+		else
+		{
+			Con_Printf("CDAudio: ov_open failed code=%d for %s\n", ovret, path);
+			fioClose(ogg_fd);
+			ogg_fd = -1;
+		}
 	}
 	Sys_DiscUnlock();
 
 	if (!ok)
-	{
-		Con_Printf("CDAudio: %s is not a valid Ogg\n", path);
 		return 0;
-	}
 
 	vi = ov_info(&vf, -1);
 	src_rate  = vi ? vi->rate : OUT_RATE;
@@ -262,14 +253,9 @@ static void MusicThread (void *arg)
 				short l, r;
 				if (!CD_GetFrame(&l, &r))
 				{
-					if (looping)
-					{
-						Sys_DiscLock();
-						ov_pcm_seek(&vf, 0);
-						Sys_DiscUnlock();
-						src_frames = src_pos = 0;
+					// Non-seekable stream: loop by reopening from the start.
+					if (looping && CD_OpenTrack(cur_track))
 						continue;
-					}
 					playing = 0;
 					CD_CloseFile();
 					break;

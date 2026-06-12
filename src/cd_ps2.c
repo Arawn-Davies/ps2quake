@@ -1,15 +1,12 @@
 /*
-	cd_ps2.c -- "CD audio" for the PS2 port: OGG Vorbis music streamed from the
-	boot disc. Quake calls CDAudio_Play(track) on map change; we open
-	id1/music/track%02d.ogg and decode it with libvorbisfile in a low-priority
-	thread, nearest-neighbour resampling to the 22050 Hz stereo output rate into
-	a PCM ring buffer. The audio feed thread (snd_ps2.c) mixes that ring buffer
-	on top of the sound effects -> audsrv.
+	cd_ps2.c -- "CD audio" for the PS2 port: music as IMA ADPCM WAV streamed
+	from the boot disc and decoded on the EE (a few ops per sample, ~10x
+	cheaper than Vorbis and no library / heap allocation), then fed to the
+	SPU2 PCM streaming buffer via audsrv. Quake calls CDAudio_Play(track) on
+	map change; we stream cdfs:/id1/music/track%02d.wav.
 
-	The OGGs are large (up to 15 MB) so they cannot be preloaded; they stream
-	off cdfs via fio, which is non-reentrant and shares the single drive with
-	the game's own reads -- so every disc op goes through the Sys_DiscLock
-	semaphore (the vorbisfile callbacks below, and sys_ps2.c's Sys_File*).
+	Tracks are 22050 Hz stereo (the output rate) so no resampling is needed.
+	All disc I/O goes through Sys_DiscLock (shared with the game's reads).
 */
 
 #include <kernel.h>
@@ -17,69 +14,56 @@
 #include <fileio.h>
 #include <string.h>
 #include <stdio.h>
-#include <vorbis/vorbisfile.h>
 
 #include "quakedef.h"
 
 extern void Sys_DiscLock (void);
 extern void Sys_DiscUnlock (void);
-
 extern cvar_t bgmvolume;
 
 #define OUT_RATE	22050			// must match snd_ps2.c SND_SPEED
 #define RING_FRAMES	22050			// ~1s of stereo slack to ride disc stalls
 
 static short		music_ring[RING_FRAMES * 2];
-static volatile int	ring_w = 0, ring_r = 0;	// producer / consumer (frames)
+static volatile int	ring_w = 0, ring_r = 0;
 
 static int			cd_initialized = 0;
 static volatile int	thread_run = 0;
 static volatile int	playing = 0;
 static volatile int	paused = 0;
 static volatile int	looping = 0;
-static volatile int	want_track = 0;			// >=2 requests the thread to open
-static int			cur_track = 0;			// track currently open (for reopen-loop)
+static volatile int	want_track = 0;
+static int			cur_track = 0;
 static int			music_tid = -1;
 static char			music_stack[16 * 1024] __attribute__((aligned(16)));
 
-// --- decoder state (music thread only) ---
-static OggVorbis_File	vf;
-static int			vf_open = 0;
-static int			ogg_fd = -1;
+// --- WAV/IMA stream state (music thread only) ---
+static int			wav_fd = -1;
+static int			wav_channels = 2;
+static int			wav_block_align = 1024;
+static long			wav_pos = 0;		// current read offset in file
+static long			wav_data_start = 0;	// first byte of the data chunk
+static long			wav_data_end = 0;	// one past last data byte
+
+// --- resample state (src_step==1 for our 22050 tracks => pass-through) ---
 static int			src_rate = OUT_RATE;
-static int			src_chans = 2;
-static double		src_step = 1.0;			// src frames advanced per out frame
+static double		src_step = 1.0;
 static double		src_frac = 0.0;
-static short			src_buf[8192];			// decoded source (interleaved)
-static int			src_frames = 0;			// frames held in src_buf
-static int			src_pos = 0;			// consumed frames
+static short			src_buf[8192];		// decoded interleaved L,R
+static int			src_frames = 0;
+static int			src_pos = 0;
 
-// ---- vorbisfile callbacks: STREAM-ONLY (no seek/tell). cdfs reads work but
-//      its seeking (esp. the seek-to-end ov_open does to count samples) is
-//      unreliable, so we present the file as a non-seekable stream -- vorbis
-//      then just decodes forward, which is all playback needs. Looping is done
-//      by closing and reopening the track. Raw fio under the caller's lock. ----
+// IMA ADPCM tables
+static const int ima_index_tab[16] =
+	{ -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 };
+static const int ima_step_tab[89] = {
+	7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,
+	88,97,107,118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,
+	544,598,658,724,796,876,963,1060,1166,1282,1411,1552,1707,1878,2066,2272,
+	2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,6484,7132,7845,8630,9493,
+	10442,11487,12635,13899,15289,16818,18500,20350,22385,24623,27086,29794,32767 };
 
-static size_t ogg_cb_read (void *ptr, size_t size, size_t nmemb, void *ds)
-{
-	int got;
-
-	(void)ds;
-	got = fioRead(ogg_fd, ptr, (int)(size * nmemb));
-	if (got <= 0)
-		return 0;
-	return (size_t)got / size;
-}
-
-static int ogg_cb_close (void *ds)
-{
-	(void)ds;
-	return 0;	// fd is closed by CD_CloseFile so locking stays in one place
-}
-
-static ov_callbacks ogg_cbs = { ogg_cb_read, NULL, ogg_cb_close, NULL };
-
-// ---- ring buffer (single producer = music thread, single consumer = mixer) -
+// ---- ring buffer (single producer = music thread, consumer = mixer) --------
 
 static int ring_free (void)
 {
@@ -96,131 +80,258 @@ static void ring_put (short l, short r)
 	ring_w = (ring_w + 1) % RING_FRAMES;
 }
 
-// ---- decode + resample (music thread) --------------------------------------
+// ---- little-endian helpers + locked disc read ------------------------------
 
-static void CD_CloseFile (void)
+static unsigned rd_u16 (const unsigned char *p) { return p[0] | (p[1] << 8); }
+static unsigned rd_u32 (const unsigned char *p)
+{ return p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned)p[3] << 24); }
+
+// Read n bytes at file offset `off`; returns bytes read. Seeks every time so
+// interleaved game reads on other fds can't disturb our position on cdfs.
+static int CD_ReadAt (long off, unsigned char *dst, int n)
 {
+	int got;
+
 	Sys_DiscLock();
-	if (vf_open)
-	{
-		ov_clear(&vf);
-		vf_open = 0;
-	}
-	if (ogg_fd >= 0)
-	{
-		fioClose(ogg_fd);
-		ogg_fd = -1;
-	}
+	fioLseek(wav_fd, off, SEEK_SET);
+	got = fioRead(wav_fd, dst, n);
 	Sys_DiscUnlock();
+	return got;
 }
 
-// Pull one decoded source frame chunk into src_buf. Returns frames (0 = EOF).
-static int CD_DecodeSrc (void)
-{
-	char	raw[4096];
-	int		bs, i, n;
-	long	ret;
-	short  *s;
+// ---- WAV header parse + IMA block decode -----------------------------------
 
-	Sys_DiscLock();
-	ret = ov_read(&vf, raw, sizeof(raw), 0, 2, 1, &bs);	// 16-bit signed LE
-	Sys_DiscUnlock();
-	if (ret <= 0)
+static int CD_ParseWav (void)
+{
+	unsigned char	buf[40];
+	long			pos;
+
+	if (CD_ReadAt(0, buf, 12) < 12)
+		return 0;
+	if (memcmp(buf, "RIFF", 4) || memcmp(buf + 8, "WAVE", 4))
 		return 0;
 
-	s = (short *)raw;
-	if (src_chans == 1)
+	for (pos = 12; ; )
 	{
-		n = (int)ret / 2;					// mono samples -> duplicate to stereo
-		for (i = 0; i < n; i++)
-		{
-			src_buf[i * 2]     = s[i];
-			src_buf[i * 2 + 1] = s[i];
-		}
-	}
-	else
-	{
-		n = (int)ret / 4;					// interleaved stereo frames
-		memcpy(src_buf, raw, (size_t)ret);
-	}
+		unsigned sz;
 
-	src_frames = n;
-	src_pos = 0;
-	return n;
+		if (CD_ReadAt(pos, buf, 8) < 8)
+			return 0;
+		sz = rd_u32(buf + 4);
+
+		if (!memcmp(buf, "fmt ", 4))
+		{
+			int fn = (sz > 32) ? 32 : (int)sz;
+			if (CD_ReadAt(pos + 8, buf, fn) < fn)
+				return 0;
+			wav_channels    = rd_u16(buf + 2);
+			src_rate        = rd_u32(buf + 4);
+			wav_block_align = rd_u16(buf + 12);
+		}
+		else if (!memcmp(buf, "data", 4))
+		{
+			wav_data_start = pos + 8;
+			wav_data_end   = pos + 8 + sz;
+			wav_pos        = wav_data_start;
+			return 1;
+		}
+
+		pos += 8 + sz + (sz & 1);	// next chunk (word-aligned)
+	}
 }
 
-// Produce one output frame at OUT_RATE (nearest-neighbour). 0 on EOF.
+// Decode 4 ADPCM bytes (8 nibbles, low then high) -> 8 samples.
+static void CD_DecNibbles (const unsigned char *b, int *pred, int *idx, short *out)
+{
+	int p = *pred, ix = *idx, k;
+
+	for (k = 0; k < 4; k++)
+	{
+		int byte = b[k];
+		int half;
+
+		for (half = 0; half < 2; half++)
+		{
+			int nib = half ? (byte >> 4) : (byte & 0xf);
+			int step = ima_step_tab[ix];
+			int diff = step >> 3;
+
+			if (nib & 4) diff += step;
+			if (nib & 2) diff += step >> 1;
+			if (nib & 1) diff += step >> 2;
+			if (nib & 8) p -= diff; else p += diff;
+			if (p >  32767) p =  32767; else if (p < -32768) p = -32768;
+
+			ix += ima_index_tab[nib];
+			if (ix < 0) ix = 0; else if (ix > 88) ix = 88;
+
+			out[k * 2 + half] = (short)p;
+		}
+	}
+	*pred = p;
+	*idx = ix;
+}
+
+// Decode one IMA ADPCM WAV block into src_buf; returns stereo frames.
+static int CD_DecodeBlock (const unsigned char *blk, int blen)
+{
+	if (wav_channels == 2)
+	{
+		int predL = (short)rd_u16(blk + 0), idxL = blk[2];
+		int predR = (short)rd_u16(blk + 4), idxR = blk[6];
+		const unsigned char *d = blk + 8;
+		int groups = (blen - 8) / 8;		// 4 bytes L + 4 bytes R per group
+		int fi = 1, g, i;
+
+		if (idxL > 88) idxL = 88;
+		if (idxR > 88) idxR = 88;
+		src_buf[0] = (short)predL;
+		src_buf[1] = (short)predR;
+
+		for (g = 0; g < groups; g++)
+		{
+			short Ls[8], Rs[8];
+			CD_DecNibbles(d + g * 8,     &predL, &idxL, Ls);
+			CD_DecNibbles(d + g * 8 + 4, &predR, &idxR, Rs);
+			for (i = 0; i < 8; i++)
+			{
+				src_buf[fi * 2]     = Ls[i];
+				src_buf[fi * 2 + 1] = Rs[i];
+				fi++;
+			}
+		}
+		return fi;
+	}
+	else
+	{	// mono: 1 header + 8 samples per 4 bytes, duplicated to both channels
+		int pred = (short)rd_u16(blk + 0), idx = blk[2];
+		const unsigned char *d = blk + 4;
+		int groups = (blen - 4) / 4;
+		int fi = 1, g, i;
+
+		if (idx > 88) idx = 88;
+		src_buf[0] = src_buf[1] = (short)pred;
+
+		for (g = 0; g < groups; g++)
+		{
+			short s[8];
+			CD_DecNibbles(d + g * 4, &pred, &idx, s);
+			for (i = 0; i < 8; i++)
+			{
+				src_buf[fi * 2] = src_buf[fi * 2 + 1] = s[i];
+				fi++;
+			}
+		}
+		return fi;
+	}
+}
+
+// Pull one block from disc and decode it. Returns frames (0 = EOF).
+static int CD_DecodeSrc (void)
+{
+	static unsigned char block[2048] __attribute__((aligned(64)));
+	int n;
+
+	if (wav_pos >= wav_data_end)
+		return 0;
+
+	n = wav_block_align;
+	if (n > (int)sizeof(block))
+		n = sizeof(block);
+	if (wav_pos + n > wav_data_end)
+		n = (int)(wav_data_end - wav_pos);
+	if (n <= 8)
+		return 0;
+
+	if (CD_ReadAt(wav_pos, block, n) <= 0)
+		return 0;
+	wav_pos += n;
+
+	src_frames = CD_DecodeBlock(block, n);
+	src_pos = 0;
+	return src_frames;
+}
+
+// Produce one output frame at OUT_RATE (box-filter resample; pass-through at
+// src_step==1). 0 on EOF.
 static int CD_GetFrame (short *l, short *r)
 {
-	while (src_pos >= src_frames)
-		if (CD_DecodeSrc() <= 0)
-			return 0;
-
-	*l = src_buf[src_pos * 2];
-	*r = src_buf[src_pos * 2 + 1];
+	long	suml = 0, sumr = 0;
+	int		cnt = 0;
 
 	src_frac += src_step;
 	while (src_frac >= 1.0)
 	{
-		src_frac -= 1.0;
-		src_pos++;
 		if (src_pos >= src_frames)
 			if (CD_DecodeSrc() <= 0)
-				return 0;
+				break;
+		if (src_pos < src_frames)
+		{
+			suml += src_buf[src_pos * 2];
+			sumr += src_buf[src_pos * 2 + 1];
+			cnt++;
+			src_pos++;
+		}
+		src_frac -= 1.0;
 	}
+
+	if (cnt == 0)
+	{
+		while (src_pos >= src_frames)
+			if (CD_DecodeSrc() <= 0)
+				return 0;
+		*l = src_buf[src_pos * 2];
+		*r = src_buf[src_pos * 2 + 1];
+		return 1;
+	}
+
+	*l = (short)(suml / cnt);
+	*r = (short)(sumr / cnt);
 	return 1;
+}
+
+static void CD_CloseFile (void)
+{
+	if (wav_fd >= 0)
+	{
+		Sys_DiscLock();
+		fioClose(wav_fd);
+		Sys_DiscUnlock();
+		wav_fd = -1;
+	}
 }
 
 static int CD_OpenTrack (int track)
 {
-	char		path[64];
-	vorbis_info	*vi;
-
-	int ok;
+	char path[64];
 
 	CD_CloseFile();
+	sprintf(path, "cdfs:/id1/music/track%02d.wav", track);
 
-	sprintf(path, "cdfs:/id1/music/track%02d.ogg", track);
-
-	// Hold the lock across open + header parse so the seek/read sequence is
-	// not interleaved with the game's disc access (which corrupts it on cdfs).
 	Sys_DiscLock();
-	ogg_fd = fioOpen(path, FIO_O_RDONLY);
-	if (ogg_fd < 0)
+	wav_fd = fioOpen(path, FIO_O_RDONLY);
+	Sys_DiscUnlock();
+	if (wav_fd < 0)
 	{
-		Sys_DiscUnlock();
 		Con_Printf("CDAudio: %s not found\n", path);
 		return 0;
 	}
-	cur_track = track;
 
+	if (!CD_ParseWav())
 	{
-		int ovret = ov_open_callbacks(NULL, &vf, NULL, 0, ogg_cbs);
-		ok = (ovret >= 0);
-		if (ok)
-			vf_open = 1;
-		else
-		{
-			Con_Printf("CDAudio: ov_open failed code=%d for %s\n", ovret, path);
-			fioClose(ogg_fd);
-			ogg_fd = -1;
-		}
-	}
-	Sys_DiscUnlock();
-
-	if (!ok)
+		Con_Printf("CDAudio: %s is not a usable WAV\n", path);
+		CD_CloseFile();
 		return 0;
+	}
 
-	vi = ov_info(&vf, -1);
-	src_rate  = vi ? vi->rate : OUT_RATE;
-	src_chans = vi ? vi->channels : 2;
+	cur_track = track;
 	src_step  = (double)src_rate / (double)OUT_RATE;
 	src_frac  = 0.0;
 	src_frames = 0;
 	src_pos = 0;
 
-	Con_Printf("CDAudio: playing track%02d.ogg (%d Hz %d ch)\n",
-		track, src_rate, src_chans);
+	Con_Printf("CDAudio: playing track%02d.wav (%d Hz %d ch IMA-ADPCM)\n",
+		track, src_rate, wav_channels);
 	return 1;
 }
 
@@ -240,12 +351,10 @@ static void MusicThread (void *arg)
 
 		if (!playing || paused)
 		{
-			DelayThread(20000);		// 20 ms idle
+			DelayThread(20000);
 			continue;
 		}
 
-		// Top the ring up; yield periodically so a big disc read by the game
-		// (which we may be blocking on the lock) isn't held off too long.
 		{
 			int budget = 4096;
 			while (playing && budget-- > 0 && ring_free() > 2)
@@ -253,9 +362,12 @@ static void MusicThread (void *arg)
 				short l, r;
 				if (!CD_GetFrame(&l, &r))
 				{
-					// Non-seekable stream: loop by reopening from the start.
-					if (looping && CD_OpenTrack(cur_track))
+					if (looping)		// rewind to data start
+					{
+						wav_pos = wav_data_start;
+						src_frames = src_pos = 0;
 						continue;
+					}
 					playing = 0;
 					CD_CloseFile();
 					break;
@@ -263,7 +375,7 @@ static void MusicThread (void *arg)
 				ring_put(l, r);
 			}
 		}
-		DelayThread(4000);			// 4 ms
+		DelayThread(4000);
 	}
 	ExitThread();
 }
@@ -330,7 +442,7 @@ int CDAudio_Init (void)
 	StartThread(music_tid, NULL);
 
 	cd_initialized = 1;
-	Con_Printf("CDAudio: OGG music streamer ready\n");
+	Con_Printf("CDAudio: IMA-ADPCM music streamer ready\n");
 	return 0;
 }
 
@@ -340,18 +452,15 @@ void CDAudio_Play (byte track, qboolean loop)
 		return;
 
 	looping = loop;
-	want_track = track;		// the music thread opens it (disc I/O off main)
+	want_track = track;
 }
 
 void CDAudio_Stop (void)
 {
 	if (!cd_initialized)
 		return;
-
 	playing = 0;
 	want_track = 0;
-	// file is closed by the music thread next loop (or here if idle); clearing
-	// playing is enough to silence the mix immediately.
 }
 
 void CDAudio_Pause (void)
@@ -366,14 +475,12 @@ void CDAudio_Resume (void)
 
 void CDAudio_Update (void)
 {
-	// Streaming + looping are handled by the music thread; nothing per-frame.
 }
 
 void CDAudio_Shutdown (void)
 {
 	if (!cd_initialized)
 		return;
-
 	thread_run = 0;
 	playing = 0;
 	if (music_tid >= 0)

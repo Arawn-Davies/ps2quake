@@ -18,6 +18,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 #include "quakedef.h"
+#include "ps2_settings.h"
 
 #ifdef _WIN32
 #include "winquake.h"
@@ -1037,12 +1038,23 @@ again:
 /* OPTIONS MENU */
 
 #ifdef _WIN32
-#define	OPTIONS_ITEMS	14
+#define	OPTIONS_ITEMS	19
 #else
-#define	OPTIONS_ITEMS	13
+#define	OPTIONS_ITEMS	18
 #endif
 
+// PS2 settings items inserted before "Video Options" (which moves to index 17).
+#define	OPT_FOV			12
+#define	OPT_DEADZONE	13
+#define	OPT_SOUTHPAW	14
+#define	OPT_RSCALE		15
+#define	OPT_SAVE		16
+#define	OPT_VIDEO		17
+
 #define	SLIDER_RANGE	10
+
+extern cvar_t	scr_fov;
+static int	options_save_status = -100;	// -100 none; 0 ok; <0 fail
 
 int		options_cursor;
 
@@ -1137,8 +1149,43 @@ void M_AdjustSliders (int dir)
 		Cvar_SetValue ("lookstrafe", !lookstrafe.value);
 		break;
 
+	case OPT_FOV:	// field of view (degrees)
+		{
+			float f = scr_fov.value + dir * 5;
+			if (f < 70)  f = 70;
+			if (f > 130) f = 130;
+			Cvar_SetValue ("fov", f);
+			ps2_settings.fov = (unsigned char) f;
+			vid.recalc_refdef = 1;
+		}
+		break;
+
+	case OPT_DEADZONE:	// analog stick deadzone (percent)
+		{
+			int d = ps2_settings.deadzone + dir * 5;
+			if (d < 0)  d = 0;
+			if (d > 40) d = 40;
+			ps2_settings.deadzone = (unsigned char) d;
+		}
+		break;
+
+	case OPT_SOUTHPAW:	// swap move/look sticks
+		ps2_settings.southpaw = !ps2_settings.southpaw;
+		break;
+
+	case OPT_RSCALE:	// 3D internal-res divisor (GS upscales the result)
+		{
+			int s = ps2_settings.render_scale + dir;
+			if (s < 1) s = 1;
+			if (s > 3) s = 3;
+			ps2_settings.render_scale = (unsigned char) s;
+			Cvar_SetValue ("r_3dscale", s);
+			vid.recalc_refdef = 1;	// force a full-screen redraw (border etc.)
+		}
+		break;
+
 #ifdef _WIN32
-	case 13:	// _windowed_mouse
+	case 18:	// _windowed_mouse
 		Cvar_SetValue ("_windowed_mouse", !_windowed_mouse.value);
 		break;
 #endif
@@ -1220,14 +1267,36 @@ void M_Options_Draw (void)
 	M_Print (16, 120, "            Lookstrafe");
 	M_DrawCheckbox (220, 120, lookstrafe.value);
 
+	M_Print (16, 128, "         Field of View");
+	r = (scr_fov.value - 70) / (130 - 70);
+	M_DrawSlider (220, 128, r);
+
+	M_Print (16, 136, "        Stick Deadzone");
+	r = ps2_settings.deadzone / 40.0;
+	M_DrawSlider (220, 136, r);
+
+	M_Print (16, 144, "              Southpaw");
+	M_DrawCheckbox (220, 144, ps2_settings.southpaw);
+
+	M_Print (16, 152, "          Render Scale");
+	M_Print (220, 152, (ps2_settings.render_scale >= 3) ? "1/3 fastest"
+	                  : (ps2_settings.render_scale == 2) ? "1/2 faster"
+	                  : "Full");
+
+	M_Print (16, 160, "   Save Settings to Card");
+	if (options_save_status == 0)
+		M_Print (220, 160, "saved");
+	else if (options_save_status > -100)
+		M_Print (220, 160, "no card");
+
 	if (vid_menudrawfn)
-		M_Print (16, 128, "         Video Options");
+		M_Print (16, 168, "         Video Options");
 
 #ifdef _WIN32
 	if (modestate == MS_WINDOWED)
 	{
-		M_Print (16, 136, "             Use Mouse");
-		M_DrawCheckbox (220, 136, _windowed_mouse.value);
+		M_Print (16, 176, "             Use Mouse");
+		M_DrawCheckbox (220, 176, _windowed_mouse.value);
 	}
 #endif
 
@@ -1258,7 +1327,10 @@ void M_Options_Key (int k)
 		case 2:
 			Cbuf_AddText ("exec default.cfg\n");
 			break;
-		case 12:
+		case OPT_SAVE:
+			options_save_status = PS2Settings_Save ();
+			break;
+		case OPT_VIDEO:
 			M_Menu_Video_f ();
 			break;
 		default:
@@ -1290,19 +1362,19 @@ void M_Options_Key (int k)
 		break;
 	}
 
-	if (options_cursor == 12 && vid_menudrawfn == NULL)
+	if (options_cursor == OPT_VIDEO && vid_menudrawfn == NULL)
 	{
 		if (k == K_UPARROW)
-			options_cursor = 11;
+			options_cursor = OPT_SAVE;
 		else
 			options_cursor = 0;
 	}
 
 #ifdef _WIN32
-	if ((options_cursor == 13) && (modestate != MS_WINDOWED))
+	if ((options_cursor == 18) && (modestate != MS_WINDOWED))
 	{
 		if (k == K_UPARROW)
-			options_cursor = 12;
+			options_cursor = OPT_VIDEO;
 		else
 			options_cursor = 0;
 	}
@@ -1658,6 +1730,7 @@ void M_Quit_Key (int key)
 		}
 		break;
 
+	case K_ENTER:		// Cross (accept) confirms quit on the pad
 	case 'Y':
 	case 'y':
 		key_dest = key_console;

@@ -11,6 +11,8 @@
 #include <ps2_keyboard_driver.h>
 #include <ps2_mouse_driver.h>
 
+#include "ps2_settings.h"
+
 /* Whether the USB keyboard/mouse came up -- read by in_ps2.c so the per-frame
    input RPCs are skipped (rather than blocking) when a device isn't present. */
 int ps2_kbd_ok = 0;
@@ -74,4 +76,13 @@ void loadmodules()
    ps2_mouse_ok = (init_mouse_driver(true) == MOUSE_INIT_STATUS_OK);
    if(!ps2_mouse_ok)
           printf("PS2 mouse not available\n");
+
+   /* Memory card: bring up libmc and load PS2-specific settings (fov, stick
+      deadzone, southpaw, ...). Falls back to defaults when no card is present;
+      the launcher may already have written the file this boot. */
+   PS2Settings_McInit();
+   if (PS2Settings_Load())
+          printf("ps2quake: settings loaded from memory card\n");
+   else
+          printf("ps2quake: using default settings (no card / no file)\n");
 }

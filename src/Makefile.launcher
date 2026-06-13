@@ -1,0 +1,19 @@
+# Boot launcher ELF (renderer picker). Standalone; does not touch the quake
+# builds. Build from src/:  ./build.sh launcher  (or: make -f Makefile.launcher)
+# Output: bin/launcher.elf
+
+EE_BIN  = bin/launcher.elf
+EE_OBJS = launcher_main.o ps2_settings.o
+
+# libdebug = text screen (init_scr/scr_*), libpad = controller, libmc = memory
+# card (ps2_settings). libkernel (LoadExecPS2, SifInitRpc, SifLoadModule) + libc
+# are appended by Makefile.eeglobal.
+EE_LIBS = -ldebug -lpad -lmc
+
+all: $(EE_BIN)
+
+clean:
+	rm -f $(EE_BIN) $(EE_OBJS)
+
+include $(PS2SDK)/samples/Makefile.pref
+include Makefile.eeglobal

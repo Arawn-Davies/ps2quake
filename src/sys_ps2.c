@@ -37,6 +37,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "errno.h"
 #include "ps2.h"
+#include "ps2_settings.h"
 #include "pad.h"
 
 
@@ -388,8 +389,15 @@ void Sys_Printf (char *fmt, ...)
 }
 
 void Sys_Quit (void)
-{    
+{
     IOP_reset();
+
+    // Return to the boot launcher (the renderer picker) on the combo disc, so
+    // "press Y to quit" drops back to the menu instead of to nothing. On a
+    // single-renderer disc LAUNCH.ELF isn't present and LoadExecPS2 falls
+    // through to the plain exit below.
+    LoadExecPS2("cdrom0:\\LAUNCH.ELF;1", 0, NULL);
+
     __asm__ __volatile__(
     "	li $3, 0x04;"
     "	syscall;"
@@ -452,17 +460,13 @@ int main (int argc, char **argv)
     
 	//signal(SIGFPE, SIG_IGN);
 	//SifInitRpc(0);
-	loadmodules();
-	//if (SDL_Init(SDL_INIT_AUDIO) < 0)
-      //  Sys_Error("VID: Couldn't load SDL: %s", SDL_GetError());
-	//LoadModules();
-/*
-	if(mcInit(MC_TYPE_MC) < 0) 
-	{
-		printf("Failed to initialise memcard\n");
-		SleepThread();
-	}
-*/
+	loadmodules();		// also loads PS2 settings from the memory card
+	// Launcher-supplied toggles (video/widescreen/fov/...) override the card,
+	// so a choice in the boot picker takes effect even with no memory card.
+	PS2Settings_ApplyArgv (argc, argv);
+
+	// (No SDL: video=gsKit/native GS, audio=audsrv, input=libpad/libkbd/libmouse.)
+
 	inithandle();
 	
 	parms.memsize = 24*1024*1024;
@@ -488,15 +492,20 @@ int main (int argc, char **argv)
 
 		oldtime = newtime;
 
-        // Benchmark probe: average rendered FPS to the log every 2s. We run
-        // below the 60Hz vsync cap, so this reflects raw render performance.
+        // Benchmark probe: average rendered FPS to the log every 2s, tagged
+        // with the active render scale (r_3dscale) and screen size (viewsize)
+        // so the readings are self-documenting. We run below the 60Hz vsync
+        // cap, so this reflects raw render performance.
         {
             static int   fps_n = 0;
             static float fps_t = 0;
+            extern cvar_t r_3dscale, scr_viewsize;
             fps_n++;
             if (newtime - fps_t >= 2.0f)
             {
-                printf("FPS: %.1f\n", (float)fps_n / (newtime - fps_t));
+                printf("FPS: %.1f  rscale=%d  viewsize=%d\n",
+                       (float)fps_n / (newtime - fps_t),
+                       (int)r_3dscale.value, (int)scr_viewsize.value);
                 fps_n = 0;
                 fps_t = newtime;
             }

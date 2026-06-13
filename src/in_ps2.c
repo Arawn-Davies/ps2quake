@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "in_ps2.h"
 #include "pad.h"
 #include "ps2.h"
+#include "ps2_settings.h"
 
 PS2KbdRawKey key;
 PS2MouseData mouse;
@@ -41,6 +42,7 @@ cvar_t		m_filter = {"m_filter","0", true};
 // Engine globals used for analog look/move.
 extern cvar_t	cl_forwardspeed;
 extern cvar_t	cl_sidespeed;
+extern cvar_t	cl_movespeedkey;
 extern double	host_frametime;
 
 /* Set by loadmodules() (ps2.c) via ps2_drivers: whether the USB keyboard/mouse
@@ -105,20 +107,23 @@ static void IN_PadButtons (void)
 	#define PADKEY(bit,qkey) \
 		if (chg & (bit)) Key_Event((qkey), (cur & (bit)) != 0)
 
+	// Modern console layout: Cross accepts, Circle cancels/backs, R2 fires,
+	// L2 runs, Square jumps. (Quake's default binds give SHIFT=+speed,
+	// SPACE=+jump, MOUSE1=+attack; the menu hardcodes ENTER=accept, ESC=back.)
 	PADKEY(PAD_UP,       K_UPARROW);	// +forward / menu up
 	PADKEY(PAD_DOWN,     K_DOWNARROW);	// +back    / menu down
 	PADKEY(PAD_LEFT,     K_LEFTARROW);	// +left    / menu left
 	PADKEY(PAD_RIGHT,    K_RIGHTARROW);	// +right   / menu right
-	PADKEY(PAD_CROSS,    K_ENTER);		// menu confirm
-	PADKEY(PAD_TRIANGLE, K_ESCAPE);		// menu back
+	PADKEY(PAD_CROSS,    K_ENTER);		// accept / confirm
+	PADKEY(PAD_CIRCLE,   K_ESCAPE);		// cancel / back / pause menu
+	PADKEY(PAD_TRIANGLE, K_MOUSE2);		// secondary attack
+	PADKEY(PAD_SQUARE,   K_SPACE);		// jump
 	PADKEY(PAD_START,    K_ESCAPE);		// open menu
 	PADKEY(PAD_SELECT,   K_TAB);		// scoreboard
-	PADKEY(PAD_SQUARE,   K_SPACE);		// +jump
-	PADKEY(PAD_CIRCLE,   K_SHIFT);		// +speed (run)
-	PADKEY(PAD_R1,       K_MOUSE1);		// +attack (fire)
-	PADKEY(PAD_R2,       K_MOUSE1);		// +attack (fire)
-	PADKEY(PAD_L1,       K_MOUSE2);		// secondary
-	PADKEY(PAD_L2,       K_CTRL);		// +attack alt
+	PADKEY(PAD_R2,       K_MOUSE1);		// fire
+	PADKEY(PAD_R1,       K_MOUSE1);		// fire
+	PADKEY(PAD_L2,       K_SHIFT);		// run (+speed)
+	PADKEY(PAD_L1,       K_MOUSE2);		// secondary attack
 
 	#undef PADKEY
 	old_pad = cur;
@@ -205,33 +210,54 @@ void IN_Commands (void)
 	IN_PadButtons();
 }
 
-// 0..255 analog axis (centre ~128) -> -1..1 with a centre deadzone.
+// 0..255 analog axis (centre ~128) -> -1..1 with a centre deadzone taken from
+// the saved settings (percent of full deflection).
 static float IN_PadAxis (unsigned char v)
 {
-	float f = ((int)v - 128) / 127.0f;
+	float	f  = ((int)v - 128) / 127.0f;
+	float	dz = ps2_settings.deadzone / 100.0f;
 
 	if (f >  1.0f) f =  1.0f;
 	if (f < -1.0f) f = -1.0f;
-	if (f > -0.25f && f < 0.25f)
+	if (f > -dz && f < dz)
 		return 0.0f;
 	return f;
 }
 
 void IN_Move (usercmd_t *cmd)
 {
-	float	lx, ly, rx, ry;
+	float	lx, ly, rx, ry, speed;
+	float	mvx, mvy, lkx, lky;
 
 	if (IN_PadRead(&buttonst) == 0)
 		return;
 
-	lx = IN_PadAxis(buttonst.ljoy_h);	// left stick  -> move/strafe
+	// L2 held -> run. Quake's CL_BaseMove only applies the +speed multiplier
+	// (cl_movespeedkey) to keyboard movement, and does so before IN_Move adds
+	// the analog stick -- so the stick would always walk. Apply it here too,
+	// reading L2 directly (active-low) so run works regardless of binds.
+	speed = (((0xffff ^ buttonst.btns) & PAD_L2) != 0)
+	      ? cl_movespeedkey.value : 1.0f;
+
+	lx = IN_PadAxis(buttonst.ljoy_h);
 	ly = IN_PadAxis(buttonst.ljoy_v);
-	rx = IN_PadAxis(buttonst.rjoy_h);	// right stick -> look
+	rx = IN_PadAxis(buttonst.rjoy_h);
 	ry = IN_PadAxis(buttonst.rjoy_v);
 
+	// Default: left stick moves, right stick looks. Southpaw swaps them.
+	if (ps2_settings.southpaw)
+	{
+		mvx = rx; mvy = ry; lkx = lx; lky = ly;
+	}
+	else
+	{
+		mvx = lx; mvy = ly; lkx = rx; lky = ry;
+	}
+	lx = mvx; ly = mvy; rx = lkx; ry = lky;
+
 	// Left stick: strafe + forward/back (up = forward).
-	cmd->sidemove    += cl_sidespeed.value    * lx;
-	cmd->forwardmove -= cl_forwardspeed.value * ly;
+	cmd->sidemove    += cl_sidespeed.value    * lx * speed;
+	cmd->forwardmove -= cl_forwardspeed.value * ly * speed;
 
 	// Right stick: rate-based look, scaled by frame time so it's framerate
 	// independent. Up = look up, right = turn right.

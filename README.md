@@ -26,13 +26,19 @@ world geometry on the GPU. See [`docs/gs-renderer.md`](docs/gs-renderer.md).
 |-------|--------|
 | Left stick | Move / strafe |
 | Right stick | Look |
-| R1 / R2 | Fire |
-| Square | Jump |
-| Circle | Run |
-| Cross (✕) | Menu confirm |
-| Triangle / Start | Menu / back |
+| D-pad | Move / menu navigation |
+| ✕ Cross | Accept / confirm |
+| ● Circle | Cancel / back / pause |
+| □ Square | Jump |
+| △ Triangle | Secondary attack |
+| R2 / R1 | Fire |
+| L2 | Run |
+| L1 | Secondary attack |
+| Start | Menu |
 | Select | Scoreboard |
-| D-pad | Menu navigation / move |
+
+Quitting (the "press Y" prompt) returns to the renderer-select launcher on the
+combo disc.
 
 ## Building
 

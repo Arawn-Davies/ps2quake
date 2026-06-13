@@ -254,22 +254,31 @@ void Turbulent8 (espan_t *pspan)
 D_DrawSpans8
 =============
 */
+// 16-pixel affine spans (Makaqu/Abrash) instead of the original 8: the
+// perspective divide (0x10000/zi, the EE's priciest per-span cost) runs once
+// per 16 texels, and the inner copy of a full span is fully unrolled with the
+// cache width hoisted into a local. Output is identical to the 8-pixel version
+// within fixed-point round-off; partial tail spans use the simple loop.
+#define WRITEPDEST(i) { pdest[(i)] = *(pbase + (s >> 16) + (t >> 16) * cw); \
+                        s += sstep; t += tstep; }
+
 void D_DrawSpans8 (espan_t *pspan)
 {
 	int				count, spancount;
 	unsigned char	*pbase, *pdest;
 	fixed16_t		s, t, snext, tnext, sstep, tstep;
 	float			sdivz, tdivz, zi, z, du, dv, spancountminus1;
-	float			sdivz8stepu, tdivz8stepu, zi8stepu;
+	float			sdivz16stepu, tdivz16stepu, zi16stepu;
+	int				cw = cachewidth;	// hoist (faster codegen on the EE)
 
 	sstep = 0;	// keep compiler happy
 	tstep = 0;	// ditto
 
 	pbase = (unsigned char *)cacheblock;
 
-	sdivz8stepu = d_sdivzstepu * 8;
-	tdivz8stepu = d_tdivzstepu * 8;
-	zi8stepu = d_zistepu * 8;
+	sdivz16stepu = d_sdivzstepu * 16;
+	tdivz16stepu = d_tdivzstepu * 16;
+	zi16stepu = d_zistepu * 16;
 
 	do
 	{
@@ -302,8 +311,8 @@ void D_DrawSpans8 (espan_t *pspan)
 		do
 		{
 		// calculate s and t at the far end of the span
-			if (count >= 8)
-				spancount = 8;
+			if (count >= 16)
+				spancount = 16;
 			else
 				spancount = count;
 
@@ -313,27 +322,27 @@ void D_DrawSpans8 (espan_t *pspan)
 			{
 			// calculate s/z, t/z, zi->fixed s and t at far end of span,
 			// calculate s and t steps across span by shifting
-				sdivz += sdivz8stepu;
-				tdivz += tdivz8stepu;
-				zi += zi8stepu;
+				sdivz += sdivz16stepu;
+				tdivz += tdivz16stepu;
+				zi += zi16stepu;
 				z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
 
 				snext = (int)(sdivz * z) + sadjust;
 				if (snext > bbextents)
 					snext = bbextents;
-				else if (snext < 8)
-					snext = 8;	// prevent round-off error on <0 steps from
-								//  from causing overstepping & running off the
+				else if (snext < 16)
+					snext = 16;	// prevent round-off error on <0 steps from
+								//  causing overstepping & running off the
 								//  edge of the texture
 
 				tnext = (int)(tdivz * z) + tadjust;
 				if (tnext > bbextentt)
 					tnext = bbextentt;
-				else if (tnext < 8)
-					tnext = 8;	// guard against round-off error on <0 steps
+				else if (tnext < 16)
+					tnext = 16;	// guard against round-off error on <0 steps
 
-				sstep = (snext - s) >> 3;
-				tstep = (tnext - t) >> 3;
+				sstep = (snext - s) >> 4;
+				tstep = (tnext - t) >> 4;
 			}
 			else
 			{
@@ -349,16 +358,16 @@ void D_DrawSpans8 (espan_t *pspan)
 				snext = (int)(sdivz * z) + sadjust;
 				if (snext > bbextents)
 					snext = bbextents;
-				else if (snext < 8)
-					snext = 8;	// prevent round-off error on <0 steps from
-								//  from causing overstepping & running off the
+				else if (snext < 16)
+					snext = 16;	// prevent round-off error on <0 steps from
+								//  causing overstepping & running off the
 								//  edge of the texture
 
 				tnext = (int)(tdivz * z) + tadjust;
 				if (tnext > bbextentt)
 					tnext = bbextentt;
-				else if (tnext < 8)
-					tnext = 8;	// guard against round-off error on <0 steps
+				else if (tnext < 16)
+					tnext = 16;	// guard against round-off error on <0 steps
 
 				if (spancount > 1)
 				{
@@ -367,12 +376,23 @@ void D_DrawSpans8 (espan_t *pspan)
 				}
 			}
 
-			do
+			if (spancount == 16)
 			{
-				*pdest++ = *(pbase + (s >> 16) + (t >> 16) * cachewidth);
-				s += sstep;
-				t += tstep;
-			} while (--spancount > 0);
+				pdest += 16;
+				WRITEPDEST(-16); WRITEPDEST(-15); WRITEPDEST(-14); WRITEPDEST(-13);
+				WRITEPDEST(-12); WRITEPDEST(-11); WRITEPDEST(-10); WRITEPDEST(-9);
+				WRITEPDEST(-8);  WRITEPDEST(-7);  WRITEPDEST(-6);  WRITEPDEST(-5);
+				WRITEPDEST(-4);  WRITEPDEST(-3);  WRITEPDEST(-2);  WRITEPDEST(-1);
+			}
+			else
+			{
+				do
+				{
+					*pdest++ = *(pbase + (s >> 16) + (t >> 16) * cw);
+					s += sstep;
+					t += tstep;
+				} while (--spancount > 0);
+			}
 
 			s = snext;
 			t = tnext;
@@ -381,6 +401,8 @@ void D_DrawSpans8 (espan_t *pspan)
 
 	} while ((pspan = pspan->pnext) != NULL);
 }
+
+#undef WRITEPDEST
 
 #endif
 

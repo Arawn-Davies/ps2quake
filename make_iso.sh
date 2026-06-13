@@ -27,29 +27,41 @@ IMAGE=ps2dock:local
 PAKDIR="${1:-$ROOT/id1}"
 STAGE="$ROOT/dist/iso"
 
-# Renderer select: second arg "hw" picks the hardware ELF + hardware ISO name.
-if [ "${2:-}" = "hw" ]; then
-    ELF_SRC="$ROOT/src/bin/quake-hw.elf"
-    OUT="$ROOT/dist/quake-hw.iso"
-    ISONAME="quake-hw.iso"
-else
-    ELF_SRC="$ROOT/src/bin/quake.elf"
-    OUT="$ROOT/dist/quake.iso"
-    ISONAME="quake.iso"
-fi
-
-[ -f "$ELF_SRC" ] || { echo "!! $ELF_SRC missing -- run ./build.sh ${2:-} first"; exit 1; }
+# Mode (second arg): ""/sw = software, hw = hardware, combo = both + launcher.
+MODE="${2:-sw}"
+case "$MODE" in
+    hw)    ISONAME="quake-hw.iso" ;;
+    combo) ISONAME="quake-combo.iso" ;;
+    sw|"") MODE="sw"; ISONAME="quake.iso" ;;
+    *)     echo "!! unknown mode '$MODE' (use: sw | hw | combo)"; exit 1 ;;
+esac
+OUT="$ROOT/dist/$ISONAME"
 
 # Locate PAK0.PAK (case-insensitive) in the supplied directory.
 pak0="$(find "$PAKDIR" -maxdepth 1 -iname 'pak0.pak' | head -1 || true)"
 [ -n "$pak0" ] || { echo "!! pak0.pak not found in $PAKDIR"; exit 1; }
 pak1="$(find "$PAKDIR" -maxdepth 1 -iname 'pak1.pak' | head -1 || true)"
 
-echo ">> staging ISO tree in $STAGE"
+echo ">> staging ISO tree in $STAGE ($MODE)"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/id1"
-cp "$ROOT/SYSTEM.CNF"          "$STAGE/SYSTEM.CNF"
-cp "$ELF_SRC"                  "$STAGE/QUAKE.ELF"
+
+if [ "$MODE" = "combo" ]; then
+    # Launcher disc: boot the picker, which chain-loads QUAKESW/QUAKEHW.ELF.
+    for f in src/bin/launcher.elf src/bin/quake.elf src/bin/quake-hw.elf; do
+        [ -f "$ROOT/$f" ] || { echo "!! $f missing -- run ./build.sh, ./build.sh hw and ./build.sh launcher"; exit 1; }
+    done
+    cp "$ROOT/SYSTEM.LAUNCHER.CNF" "$STAGE/SYSTEM.CNF"
+    cp "$ROOT/src/bin/launcher.elf" "$STAGE/LAUNCH.ELF"
+    cp "$ROOT/src/bin/quake.elf"    "$STAGE/QUAKESW.ELF"
+    cp "$ROOT/src/bin/quake-hw.elf" "$STAGE/QUAKEHW.ELF"
+else
+    if [ "$MODE" = "hw" ]; then ELF_SRC="$ROOT/src/bin/quake-hw.elf"; else ELF_SRC="$ROOT/src/bin/quake.elf"; fi
+    [ -f "$ELF_SRC" ] || { echo "!! $ELF_SRC missing -- run ./build.sh ${2:-} first"; exit 1; }
+    cp "$ROOT/SYSTEM.CNF"  "$STAGE/SYSTEM.CNF"
+    cp "$ELF_SRC"          "$STAGE/QUAKE.ELF"
+fi
+
 cp "$pak0"                     "$STAGE/id1/PAK0.PAK"
 [ -n "$pak1" ] && cp "$pak1"   "$STAGE/id1/PAK1.PAK"
 

@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "r_local.h"
+#include "ps2_settings.h"
 
 // only the refresh window will be updated unless these variables are flagged 
 int			scr_copytop;
@@ -243,6 +244,19 @@ static void SCR_CalcRefdef (void)
 		Cvar_Set ("fov","170");
 
 	r_refdef.fov_x = scr_fov.value;
+
+// Widescreen (16:9): widen the horizontal fov (Hor+) so a 16:9 TV shows more to
+// the sides rather than stretching the 4:3 image. fov_y is re-derived below so
+// the projection stays consistent with the render buffer.
+	if (ps2_settings.widescreen)
+	{
+		double t = tan (r_refdef.fov_x * (M_PI / 360.0));
+		t *= (16.0 / 9.0) / (4.0 / 3.0);
+		r_refdef.fov_x = (float)(atan (t) * (360.0 / M_PI));
+		if (r_refdef.fov_x > 170)
+			r_refdef.fov_x = 170;
+	}
+
 	r_refdef.fov_y = CalcFov (r_refdef.fov_x, r_refdef.vrect.width, r_refdef.vrect.height);
 
 // intermission is always full screen	
@@ -314,6 +328,7 @@ SCR_Init
 void SCR_Init (void)
 {
 	Cvar_RegisterVariable (&scr_fov);
+	Cvar_SetValue ("fov", ps2_settings.fov);	// from memory-card settings
 	Cvar_RegisterVariable (&scr_viewsize);
 	Cvar_RegisterVariable (&scr_conspeed);
 	Cvar_RegisterVariable (&scr_showram);

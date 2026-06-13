@@ -35,6 +35,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <dmaKit.h>
 #include <malloc.h>
 
+#include "ps2_settings.h"
+
 viddef_t	vid;				// global video state
 
 static int verbose=0;
@@ -70,7 +72,8 @@ unsigned short	d_8to16table[256];
 static unsigned char pal_r[256], pal_g[256], pal_b[256];
 
 static GSGLOBAL	*gsGlobal = NULL;
-static GSTEXTURE	tex;			// BASEWIDTH x BASEHEIGHT PSM_T8 + CT32 CLUT
+static GSTEXTURE	tex;			// full-res 2D layer: PSM_T8 + CT32 CLUT
+static GSTEXTURE	tex3d;			// low-res 3D layer (r_3dscale composite)
 
 #ifdef R_HARDWARE
 // M2a: present through the native VU1+DMA+GS core (r_native.c) instead of gsKit.
@@ -134,11 +137,22 @@ static void VID_InitGS (void)
 {
 	gsGlobal = gsKit_init_global();
 
-	gsGlobal->Mode			= GS_MODE_NTSC;
+	// Video standard from the saved settings (AUTO == NTSC). PAL is 50Hz and
+	// 512 display lines; NTSC is 60Hz and 448. The present sprite below fills
+	// gsGlobal->Width/Height, so the software frame scales to whichever we pick.
+	if (ps2_settings.video_std == PS2VID_PAL)
+	{
+		gsGlobal->Mode		= GS_MODE_PAL;
+		gsGlobal->Height	= 512;
+	}
+	else
+	{
+		gsGlobal->Mode		= GS_MODE_NTSC;
+		gsGlobal->Height	= DISPLAY_H;
+	}
 	gsGlobal->Interlace		= GS_INTERLACED;
 	gsGlobal->Field			= GS_FIELD;
 	gsGlobal->Width			= DISPLAY_W;
-	gsGlobal->Height		= DISPLAY_H;
 	gsGlobal->PSM			= GS_PSM_CT24;
 	gsGlobal->PSMZ			= GS_PSMZ_16S;
 	gsGlobal->ZBuffering	= GS_SETTING_OFF;
@@ -165,6 +179,24 @@ static void VID_InitGS (void)
 	tex.VramClut = 0;
 	tex.Mem		= memalign(128, gsKit_texture_size_ee(tex.Width, tex.Height, tex.PSM));
 	tex.Clut	= memalign(128, gsKit_texture_size_ee(256, 1, tex.ClutPSM));
+
+	// Second texture for the low-res 3D layer when r_3dscale > 1 (see VID_Update).
+	// Shares the palette CLUT; sized to the full frame as an upper bound.
+	tex3d.Width	= vid.width;
+	tex3d.Height	= vid.height;
+	tex3d.PSM	= GS_PSM_T8;
+	tex3d.ClutPSM	= GS_PSM_CT32;
+	tex3d.Filter	= GS_FILTER_LINEAR;		// smooth hardware upscale of the world
+	tex3d.Delayed	= 0;
+	tex3d.Vram	= 0;
+	tex3d.VramClut	= 0;
+	tex3d.Mem	= memalign(128, gsKit_texture_size_ee(vid.width, vid.height, GS_PSM_T8));
+	tex3d.Clut	= tex.Clut;				// same palette
+
+	// Standard source-over alpha blend: out = src*As + dst*(1-As). The 2D layer
+	// is drawn with this enabled so its transparent-key texels (CLUT alpha 0)
+	// keep the 3D underneath; the 3D layer is drawn opaque (blend disabled).
+	gsKit_set_primalpha(gsGlobal, GS_SETREG_ALPHA(0, 1, 0, 1, 0), 0);
 }
 
 void	VID_Init (unsigned char *palette)
@@ -248,8 +280,17 @@ void	VID_Update (vrect_t *rects)
 		return;
 	}
 #else
+	// r_3dscale composite hand-off from r_main.c (0 when the world is baked into
+	// vid.buffer at scale 1, in which case we present the single frame as before).
+	extern int   r_3d_valid;
+	extern byte *r_3d_buf;
+	extern int   r_3d_bufstride, r_3d_sx, r_3d_sy, r_3d_sw, r_3d_sh;
+	extern int   r_3d_vx, r_3d_vy, r_3d_vw, r_3d_vh;
+
 	unsigned int *clut;
 	int i;
+	float fx = (float) gsGlobal->Width  / (float) vid.width;
+	float fy = (float) gsGlobal->Height / (float) vid.height;
 
 	// Rebuild the CLUT from the current palette each frame (cheap, 256 entries)
 	// so palette effects (damage flash, item pickup, powerups) show. GS RGBA32
@@ -258,24 +299,56 @@ void	VID_Update (vrect_t *rects)
 	// A 256-entry CT32 CLUT for a PSM_T8 texture is stored swizzled (CSM1):
 	// index bits 3 and 4 are swapped in VRAM. gsKit doesn't correct this, so we
 	// write each colour to the swizzled slot (otherwise the image mis-tints).
+	// Index 255 is Quake's transparent colour; give it alpha 0 so the 2D layer
+	// keys out to the 3D underneath when compositing.
 	clut = (unsigned int *) tex.Clut;
 	for (i = 0; i < 256; ++i)
 	{
 		int j = (i & ~0x18) | ((i & 0x08) << 1) | ((i & 0x10) >> 1);
+		unsigned int a = (i == 255) ? 0u : 0x80u;
 		clut[j] =  (unsigned int) pal_r[i]
 				| ((unsigned int) pal_g[i] << 8)
 				| ((unsigned int) pal_b[i] << 16)
-				| (0x80u << 24);
+				| (a << 24);
 	}
-
-	// 8-bit indices -> aligned upload buffer.
-	memcpy(tex.Mem, vid.buffer, (size_t) vid.width * vid.height);
 
 	gsKit_clear(gsGlobal, GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x00, 0x00));
 
+	// --- 3D layer: low-res world, GS-stretched to the on-screen view rect ---
+	if (r_3d_valid && r_3d_buf && r_3d_sw > 0 && r_3d_sh > 0)
+	{
+		int texw = (r_3d_sw + 63) & ~63;	// GS T8 buffer width must be /64
+		int y;
+
+		// Pack the rendered sub-rect into the aligned 3D texture buffer.
+		for (y = 0; y < r_3d_sh; ++y)
+			memcpy((byte *) tex3d.Mem + (size_t) y * texw,
+			       r_3d_buf + (size_t)(r_3d_sy + y) * r_3d_bufstride + r_3d_sx,
+			       (size_t) r_3d_sw);
+
+		tex3d.Width  = texw;
+		tex3d.Height = r_3d_sh;
+
+		gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;		// opaque
+		gsKit_TexManager_invalidate(gsGlobal, &tex3d);
+		gsKit_TexManager_bind(gsGlobal, &tex3d);
+		gsKit_prim_sprite_texture(gsGlobal, &tex3d,
+			r_3d_vx * fx, r_3d_vy * fy,					// screen x1,y1
+			0.0f, 0.0f,									// tex u1,v1
+			(r_3d_vx + r_3d_vw) * fx, (r_3d_vy + r_3d_vh) * fy,	// x2,y2
+			(float) r_3d_sw, (float) r_3d_sh,			// u2,v2
+			0,
+			GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0x00));
+	}
+
+	// --- 2D layer: HUD/console/menus. Crisp (nearest) when overlaying the 3D;
+	//     when no composite, this single sprite carries the whole frame. ---
+	tex.Filter = r_3d_valid ? GS_FILTER_NEAREST : GS_FILTER_LINEAR;
+	memcpy(tex.Mem, vid.buffer, (size_t) vid.width * vid.height);
+
+	gsGlobal->PrimAlphaEnable = r_3d_valid ? GS_SETTING_ON : GS_SETTING_OFF;
 	gsKit_TexManager_invalidate(gsGlobal, &tex);	// force re-upload (changed)
 	gsKit_TexManager_bind(gsGlobal, &tex);
-
 	gsKit_prim_sprite_texture(gsGlobal, &tex,
 		0.0f, 0.0f,									// screen x1,y1
 		0.0f, 0.0f,									// tex   u1,v1
@@ -287,6 +360,8 @@ void	VID_Update (vrect_t *rects)
 	gsKit_queue_exec(gsGlobal);
 	gsKit_sync_flip(gsGlobal);
 	gsKit_TexManager_nextFrame(gsGlobal);
+
+	r_3d_valid = 0;		// consumed
 #endif	// R_HARDWARE
 }
 

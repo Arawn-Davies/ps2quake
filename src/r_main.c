@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "r_local.h"
+#include "ps2_settings.h"
 
 //define	PASSAGES
 
@@ -209,6 +210,7 @@ void R_Init (void)
 	Cvar_RegisterVariable (&r_clearcolor);
 	Cvar_RegisterVariable (&r_waterwarp);
 	Cvar_RegisterVariable (&r_3dscale);
+	Cvar_SetValue ("r_3dscale", ps2_settings.render_scale);	// from settings
 	Cvar_RegisterVariable (&r_fullbright);
 	Cvar_RegisterVariable (&r_drawentities);
 	Cvar_RegisterVariable (&r_drawviewmodel);
@@ -1064,44 +1066,20 @@ qboolean	r_lowres_active = false;
 static byte	*r_lowres_buffer = NULL;	// separate low-res world target
 static int	 r_lowres_bufsize = 0;
 
+// --- GS composite hand-off (software present path, vid_ps2.c) -------------
+// When r_3dscale > 1 the world is rasterized into the low-res buffer and the
+// GS hardware-stretches it to the on-screen view rect (instead of the EE
+// expanding it). vid_ps2.c reads these to upload + draw the 3D layer; the 2D
+// overlay (HUD/console) is drawn into vid.buffer over the transparent colour
+// key (index 255) and composited on top.
+byte	*r_3d_buf = NULL;				// = r_lowres_buffer
+int		 r_3d_bufstride;				// row stride of r_3d_buf
+int		 r_3d_sx, r_3d_sy, r_3d_sw, r_3d_sh;	// rendered sub-rect in r_3d_buf
+int		 r_3d_vx, r_3d_vy, r_3d_vw, r_3d_vh;	// on-screen view rect (vid coords)
+int		 r_3d_valid = 0;				// 1 = composite this frame
+
 extern int		sb_lines;				// status-bar lines (screen.c)
 extern vrect_t	scr_vrect;				// on-screen 3D view rect (full res)
-
-/*
-===============
-R_ExpandToView
-
-Nearest-neighbour expand the low-res world image (srcw x srch at srcx,srcy in
-r_lowres_buffer, stride srcstride) into vid.buffer at the full-resolution view
-rect scr_vrect. The ratio is 1/r_3dscale in each axis, but we map generically
-(per-axis index tables) so any view size / scale stays exact.
-===============
-*/
-static void R_ExpandToView (int srcx, int srcy, int srcw, int srch, int srcstride)
-{
-	static int	colmap[MAXWIDTH];
-	int			dstw = scr_vrect.width;
-	int			dsth = scr_vrect.height;
-	int			dx, dy;
-
-	if (dstw <= 0 || dsth <= 0 || srcw <= 0 || srch <= 0)
-		return;
-	if (dstw > MAXWIDTH)
-		dstw = MAXWIDTH;
-
-	for (dx = 0 ; dx < dstw ; dx++)
-		colmap[dx] = srcx + (dx * srcw) / dstw;
-
-	for (dy = 0 ; dy < dsth ; dy++)
-	{
-		byte	*src = r_lowres_buffer + (srcy + (dy * srch) / dsth) * srcstride;
-		byte	*dst = (byte *)vid.buffer
-				+ (scr_vrect.y + dy) * vid.rowbytes + scr_vrect.x;
-
-		for (dx = 0 ; dx < dstw ; dx++)
-			dst[dx] = src[colmap[dx]];
-	}
-}
 
 void R_RenderView (void)
 {
@@ -1132,6 +1110,8 @@ void R_RenderView (void)
 
 	if ( (long)(&r_warpbuffer) & 3 )
 		Sys_Error ("Globals are missaligned");
+
+	r_3d_valid = 0;		// default: world is baked into vid.buffer (no composite)
 
 	scale = (int)r_3dscale.value;
 	if (scale < 1)
@@ -1195,12 +1175,32 @@ void R_RenderView (void)
 		sh = r_refdef.vrect.height;
 		sstride = vid.rowbytes;
 
-		// Restore the full-res context for the 2D overlays and expand the world.
+		// Restore the full-res context for the 2D overlays.
 		vid.buffer   = save_buffer;
 		vid.rowbytes = save_rowbytes;
 		r_lowres_active = false;
 
-		R_ExpandToView (sx, sy, sw, sh, sstride);
+		// Hand the low-res world image to the GS present path instead of
+		// expanding it on the EE: the GS stretches it to the view rect for
+		// free. Only the view rect is keyed to the transparent index (255) so
+		// the GS shows the 3D there; the rest of vid.buffer (border, HUD,
+		// menus) is left intact, since WinQuake draws those incrementally and
+		// expects them to persist between frames -- wiping the whole buffer
+		// makes anything not redrawn this frame flicker.
+		r_3d_buf       = r_lowres_buffer;
+		r_3d_bufstride = sstride;
+		r_3d_sx = sx; r_3d_sy = sy; r_3d_sw = sw; r_3d_sh = sh;
+		r_3d_vx = scr_vrect.x;     r_3d_vy = scr_vrect.y;
+		r_3d_vw = scr_vrect.width; r_3d_vh = scr_vrect.height;
+		r_3d_valid = 1;
+
+		{
+			int	yy;
+			for (yy = 0; yy < scr_vrect.height; yy++)
+				memset ((byte *) vid.buffer
+				        + (size_t)(scr_vrect.y + yy) * vid.rowbytes + scr_vrect.x,
+				        255, (size_t) scr_vrect.width);
+		}
 
 		// Put r_refdef back to the on-screen view so anything that reads it
 		// between frames (and next frame's setup) sees full-res values.

@@ -25,8 +25,8 @@ void PS2Settings_Defaults (ps2_settings_t *s)
 	s->magic      = PS2CFG_MAGIC;
 	s->version    = PS2CFG_VERSION;
 	s->size       = sizeof (*s);
-	s->renderer   = PS2REND_SOFTWARE;
-	s->video_std  = PS2VID_AUTO;
+	s->renderer   = PS2REND_HARDWARE;   /* default to the GS renderer for now */
+	s->video_std  = PS2VID_NTSC_480I;
 	s->widescreen = 0;
 	s->southpaw   = 0;
 	s->deadzone   = 25;   /* matches the old hard-coded 0.25 stick deadzone */
@@ -122,7 +122,7 @@ void PS2Settings_ApplyArgv (int argc, char **argv)
 		if (sscanf (argv[i] + sizeof (ARGV_TAG) - 1, "%d.%d.%d.%d.%d.%d",
 		            &vid, &ws, &fov, &dz, &sp, &rs) >= 5)
 		{
-			if (vid < 0 || vid > 2) vid = PS2VID_AUTO;
+			if (vid < 0 || vid >= PS2VID_COUNT) vid = PS2VID_NTSC_480I;
 			if (fov < 70)  fov = 70;
 			if (fov > 130) fov = 130;
 			if (dz  < 0)   dz  = 0;

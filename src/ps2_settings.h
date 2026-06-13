@@ -13,10 +13,20 @@
 #define PS2_SETTINGS_H
 
 #define PS2CFG_MAGIC    0x51325053u   /* 'SP2Q' */
-#define PS2CFG_VERSION  2
+#define PS2CFG_VERSION  3
 
-/* video_std */
-enum { PS2VID_AUTO = 0, PS2VID_NTSC = 1, PS2VID_PAL = 2 };
+/* video_std. Progressive (480p/576p) and the experimental HD modes need
+   component (YPbPr) / VGA on real hardware; the interlaced modes are
+   composite-safe. NTSC 480i is the default. */
+enum {
+	PS2VID_NTSC_480I = 0,	/* 640x448 CT24, interlaced  -- default */
+	PS2VID_NTSC_480P = 1,	/* 640x480 CT24, progressive */
+	PS2VID_PAL_576I  = 2,	/* 640x512 CT24, interlaced */
+	PS2VID_PAL_576P  = 3,	/* 640x512 CT24, progressive */
+	PS2VID_720P      = 4,	/* 1280x720 CT16, progressive (experimental) */
+	PS2VID_1080I     = 5,	/* 1280x1080 CT16, interlaced, single-buffer (exp) */
+	PS2VID_COUNT     = 6
+};
 /* renderer */
 enum { PS2REND_SOFTWARE = 0, PS2REND_HARDWARE = 1 };
 

@@ -65,9 +65,12 @@ static const char *video_str(void)
 {
     switch (ps2_settings.video_std)
     {
-        case PS2VID_NTSC: return "NTSC 60Hz";
-        case PS2VID_PAL:  return "PAL 50Hz";
-        default:          return "Auto (NTSC)";
+        case PS2VID_NTSC_480P: return "NTSC 480p  (component)";
+        case PS2VID_PAL_576I:  return "PAL 576i";
+        case PS2VID_PAL_576P:  return "PAL 576p   (component)";
+        case PS2VID_720P:      return "720p       (exp, component)";
+        case PS2VID_1080I:     return "1080i      (exp, component)";
+        default:               return "NTSC 480i";
     }
 }
 static const char *wide_str(void)
@@ -128,7 +131,7 @@ static void adjust(int sel, int dir)
             break;
         case ROW_VIDEO:
             ps2_settings.video_std = (unsigned char)
-                ((ps2_settings.video_std + 3 + dir) % 3);
+                ((ps2_settings.video_std + PS2VID_COUNT + dir) % PS2VID_COUNT);
             break;
         case ROW_WIDE:
             ps2_settings.widescreen ^= 1;

@@ -23,6 +23,7 @@
 #include <draw.h>
 #include <gs_psm.h>
 #include <math3d.h>
+#include <math.h>
 
 extern u32 VU1Draw3D_CodeStart __attribute__((section(".vudata")));
 extern u32 VU1Draw3D_CodeEnd   __attribute__((section(".vudata")));
@@ -169,6 +170,50 @@ void RN_Init(void)
     // legible; dial toward Quake's fov / drive from r_refdef.fov_x later.
     create_view_screen(s_proj, graph_aspect_ratio(), -3.0f, 3.0f, -3.0f, 3.0f,
                        1.0f, 32768.0f);
+}
+
+// tan() of the projection's horizontal/vertical half-angles -- the feeder reads
+// these (RN_GetFrustumTan) to build clip planes that match the screen edges.
+static float rn_tan_hx = 1.0f, rn_tan_hy = 1.0f;
+
+// Rebuild the projection from a field of view (degrees). With near=1 and square
+// extents +-e (e = tan(fov/2)), create_view_screen scales left/right by aspect,
+// so the rendered half-angles are atan(e*aspect) horizontally and atan(e)
+// vertically. Called per frame from the feeder so the FOV tracks r_refdef.
+void RN_SetFovX(float fovx_deg)
+{
+    float a = graph_aspect_ratio();
+    float e = tanf(fovx_deg * 0.5f * 3.14159265358979f / 180.0f);
+    if (e < 0.05f) e = 0.05f;   // guard against degenerate fov
+    rn_tan_hx = e * a;          // tan(horizontal half-angle)
+    rn_tan_hy = e;              // tan(vertical half-angle)
+    create_view_screen(s_proj, a, -e, e, -e, e, 1.0f, 32768.0f);
+}
+
+// tan() of the projection half-angles, for the feeder's frustum/clip planes.
+void RN_GetFrustumTan(float *tan_hx, float *tan_hy)
+{
+    *tan_hx = rn_tan_hx;
+    *tan_hy = rn_tan_hy;
+}
+
+// Transform a renderer-world point to homogeneous clip space using the exact
+// same MVP the VU applies. We do the multiply by hand (NOT calculate_vertices,
+// which perspective-divides AND zeroes off-screen verts -- both fatal for the
+// feeder's polygon clip, which needs the raw pre-divide x,y,z,w of vertices
+// that may lie outside the volume). Convention: out[k] = sum_j m[4j+k]*v[j],
+// v[3]=1 (vertex-row x column-major matrix, as math3d uses). Valid after
+// RN_FrameBegin (s_local built there). The feeder clips against +-w in this
+// space, so it matches the projection (incl. the widened FOV) exactly.
+void RN_TransformToClip(const float *in3, float *out4)
+{
+    float x = in3[0], y = in3[1], z = in3[2];
+    int   k;
+    for (k = 0; k < 4; k++)
+        out4[k] = s_local[0*4 + k] * x
+                + s_local[1*4 + k] * y
+                + s_local[2*4 + k] * z
+                + s_local[3*4 + k];
 }
 
 // ---------------------------------------------------------------------------

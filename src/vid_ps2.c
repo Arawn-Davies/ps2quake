@@ -137,26 +137,45 @@ static void VID_InitGS (void)
 {
 	gsGlobal = gsKit_init_global();
 
-	// Video standard from the saved settings (AUTO == NTSC). PAL is 50Hz and
-	// 512 display lines; NTSC is 60Hz and 448. The present sprite below fills
-	// gsGlobal->Width/Height, so the software frame scales to whichever we pick.
-	if (ps2_settings.video_std == PS2VID_PAL)
-	{
-		gsGlobal->Mode		= GS_MODE_PAL;
-		gsGlobal->Height	= 512;
-	}
-	else
-	{
-		gsGlobal->Mode		= GS_MODE_NTSC;
-		gsGlobal->Height	= DISPLAY_H;
-	}
-	gsGlobal->Interlace		= GS_INTERLACED;
-	gsGlobal->Field			= GS_FIELD;
-	gsGlobal->Width			= DISPLAY_W;
+	// Video mode from the saved settings. The present sprite below fills
+	// gsGlobal->Width/Height, so the software frame scales to fit any of these.
+	// Progressive (480p/576p) and the experimental HD modes need component/VGA
+	// on real hardware; the interlaced modes are composite-safe. The HD modes
+	// drop to CT16 (and 1080i to a single buffer) to fit GS VRAM.
 	gsGlobal->PSM			= GS_PSM_CT24;
+	gsGlobal->DoubleBuffering = GS_SETTING_ON;
+	switch (ps2_settings.video_std)
+	{
+	case PS2VID_NTSC_480P:
+		gsGlobal->Mode = GS_MODE_DTV_480P; gsGlobal->Width = 640; gsGlobal->Height = 480;
+		gsGlobal->Interlace = GS_NONINTERLACED; gsGlobal->Field = GS_FRAME;
+		break;
+	case PS2VID_PAL_576I:
+		gsGlobal->Mode = GS_MODE_PAL; gsGlobal->Width = 640; gsGlobal->Height = 512;
+		gsGlobal->Interlace = GS_INTERLACED; gsGlobal->Field = GS_FIELD;
+		break;
+	case PS2VID_PAL_576P:
+		gsGlobal->Mode = GS_MODE_DTV_576P; gsGlobal->Width = 640; gsGlobal->Height = 512;
+		gsGlobal->Interlace = GS_NONINTERLACED; gsGlobal->Field = GS_FRAME;
+		break;
+	case PS2VID_720P:
+		gsGlobal->Mode = GS_MODE_DTV_720P; gsGlobal->Width = 1280; gsGlobal->Height = 720;
+		gsGlobal->Interlace = GS_NONINTERLACED; gsGlobal->Field = GS_FRAME;
+		gsGlobal->PSM = GS_PSM_CT16;
+		break;
+	case PS2VID_1080I:
+		gsGlobal->Mode = GS_MODE_DTV_1080I; gsGlobal->Width = 1280; gsGlobal->Height = 1080;
+		gsGlobal->Interlace = GS_INTERLACED; gsGlobal->Field = GS_FIELD;
+		gsGlobal->PSM = GS_PSM_CT16;
+		gsGlobal->DoubleBuffering = GS_SETTING_OFF;	// single buffer to fit VRAM
+		break;
+	default:	/* PS2VID_NTSC_480I */
+		gsGlobal->Mode = GS_MODE_NTSC; gsGlobal->Width = DISPLAY_W; gsGlobal->Height = DISPLAY_H;
+		gsGlobal->Interlace = GS_INTERLACED; gsGlobal->Field = GS_FIELD;
+		break;
+	}
 	gsGlobal->PSMZ			= GS_PSMZ_16S;
 	gsGlobal->ZBuffering	= GS_SETTING_OFF;
-	gsGlobal->DoubleBuffering = GS_SETTING_ON;
 
 	dmaKit_init(D_CTRL_RELE_OFF, D_CTRL_MFD_OFF, D_CTRL_STS_UNSPEC,
 				D_CTRL_STD_OFF, D_CTRL_RCYC_8, 1 << DMA_CHANNEL_GIF);

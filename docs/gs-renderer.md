@@ -1,9 +1,10 @@
 # GS Hardware Renderer — Design & Port Plan
 
-**Status:** in progress — **M1, M2a, M2b done** (world geometry renders on the
-GS at ~30 fps). Built as a **separate ELF** (`quake-hw.elf`); the software
-renderer (`quake.elf`) still ships as the default. See §10 for the roadmap and
-§13 for build/run.
+**Status:** in progress — **M1, M2a, M2b, M2c, M2d done** (world geometry renders
+on the GS, PVS + backface culled, clip-space clipped against the view frustum so
+near/guard-band holes are gone). Built as a **separate ELF** (`quake-hw.elf`); the
+software renderer (`quake.elf`) still ships as the default. See §10 for the
+roadmap and §13 for build/run.
 **Goal:** move Quake's 3D world rasterization off the EE software renderer and
 onto the **Graphics Synthesizer (GS)**, driven by a **VU1 + DMA** geometry
 pipeline — running native 640×512, hardware-Z, textured, at a stable framerate.
@@ -196,28 +197,29 @@ Doom's `build_sub` BSP convex-cell reconstruction entirely.
 
 ```mermaid
 flowchart TD
-    subgraph PERFRAME["RGL_DrawFrame (Quake)"]
-        S0["RN_FrameBegin(view origin + yaw/pitch)"]
-        S1["R_RecursiveWorldNode<br/>(reuse Quake's BSP walk + PVS)"]
-        S1 --> S2["collect visible msurface_t<br/>(mark via surface->visframe)"]
-        S2 --> S3["sort/group surfaces by texture"]
-        S3 --> S4{"for each texture group"}
-        S4 --> S5["RN_TexBind(cache[texinfo->texture])"]
-        S5 --> S6["for each surface in group:<br/>fan-triangulate poly edges<br/>ST from texinfo vecs + extents"]
-        S6 --> S7["RN_SetLight(surface light)<br/>RN_AddTri × (n-2)"]
-        S7 --> S4
-        S4 -->|done| S8["entities: alias models → RN_AddTri"]
-        S8 --> S9["sky / water (special passes)"]
-        S9 --> S10["RN_Draw2D(Quake 8-bit HUD buffer)"]
+    subgraph PERFRAME["RGS_RenderWorld (Quake)"]
+        S0["RN_SetFovX(r_refdef.fov_x) + RN_FrameBegin<br/>(view origin + yaw/pitch → MVP)"]
+        S1["rgs_mark_leaves: PVS from view leaf<br/>marks visible leaves + parent nodes"]
+        S1 --> S2["rgs_walk: front-to-back BSP walk,<br/>backface-test node surfaces<br/>(skip unmarked subtrees, sky/turb)"]
+        S2 --> S6["emit_surface: fan from poly edges,<br/>ST from texinfo vecs"]
+        S6 --> SC["clip in CLIP SPACE vs ±w<br/>(near + 4 sides) via RN_TransformToClip<br/>— no near/guard-band holes"]
+        SC --> S7["RN_AddTri × (clipped n-2)"]
+        S7 --> S2
+        S2 -->|done| S10["RN_Draw2D(Quake 8-bit HUD buffer) [M7]"]
         S10 --> S11["RN_FrameEnd()"]
     end
 ```
 
 Mapping Quake structures to the feeder:
 
-- **Visibility:** reuse `R_RecursiveWorldNode` / `R_MarkLeaves` (PVS) unchanged —
-  it already produces the visible surface set on the EE cheaply. The GS Z-buffer
-  handles fine occlusion, so we can be generous (no software span clipping).
+- **Visibility (M2c):** `r_gs.c` runs its own `rgs_mark_leaves` / `rgs_walk`
+  (PVS + backface), mirroring `R_MarkLeaves`/`R_RecursiveWorldNode` — the HW path
+  skips the software `R_SetupFrame`, so it can't reuse them directly.
+- **Clipping (M2d):** each surface polygon is transformed to clip space with the
+  renderer's own MVP (`RN_TransformToClip`) and Sutherland–Hodgman-clipped against
+  `±w` (near + 4 sides), interpolating position + ST. Done in clip space (not a
+  hand-built world frustum) so it matches the projection exactly; the VU only
+  trivial-rejects, so unclipped large surfaces previously left holes.
 - **Surface → triangles:** each `msurface_t` has its polygon vertices (via
   `surfedges`/`r_pedge`); fan-triangulate. Texture coords come from
   `texinfo->vecs[0/1]` projected onto each vertex, divided by texture
@@ -353,18 +355,21 @@ flowchart TD
     M1["✅ M1 · Foundation<br/>r_native.c + draw_3D.vsm in tree,<br/>Makefile libs + dvp-as rule,<br/>checkerboard test triangle (rntest.elf)"]
     M2a["✅ M2a · Engine on backend<br/>R_HARDWARE build runs the engine<br/>via r_native (gsKit retired);<br/>software frame blitted by RN_Draw2D"]
     M2b["✅ M2b · World geometry<br/>r_gs.c walks BSP, emits all world<br/>surfaces as GS triangles + dev grid,<br/>camera from r_refdef, ~30 fps"]
-    M2c["M2c · Culling + FOV<br/>PVS/frustum cull the surface set;<br/>drive FOV from r_refdef.fov_x"]
+    M2c["✅ M2c · Culling + FOV<br/>PVS + backface cull the surface set;<br/>FOV driven from r_refdef.fov_x"]
+    M2d["✅ M2d · Clipping<br/>per-surface clip-space clip vs +-w<br/>(near + sides) using the MVP;<br/>fixes near/guard-band holes"]
     M3["M3 · Textures<br/>palette→RGBA tiles,<br/>VRAM cache, per-texture batch"]
     M4["M4 · Lighting<br/>phase 1 per-vertex light<br/>from lightmaps"]
     M5["M5 · Entities<br/>alias models (monsters/items/weapon)<br/>→ RN_AddTri"]
     M6["M6 · Specials<br/>sky, liquids/warp, particles"]
     M7["M7 · HUD overlay<br/>RN_Draw2D of Quake 2D buffer,<br/>menu/console/intermission keyed on top"]
     M8["M8 · Polish<br/>true lightmaps (phase 2),<br/>VRAM paging"]
-    M1 --> M2a --> M2b --> M2c --> M3 --> M4 --> M5 --> M6 --> M7 --> M8
+    M1 --> M2a --> M2b --> M2c --> M2d --> M3 --> M4 --> M5 --> M6 --> M7 --> M8
 
     style M1 fill:#143d14,stroke:#7d7,color:#cfe
     style M2a fill:#143d14,stroke:#7d7,color:#cfe
     style M2b fill:#143d14,stroke:#7d7,color:#cfe
+    style M2c fill:#143d14,stroke:#7d7,color:#cfe
+    style M2d fill:#143d14,stroke:#7d7,color:#cfe
 ```
 
 ---

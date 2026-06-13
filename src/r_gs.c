@@ -43,10 +43,15 @@ static int          rgs_devtex = -1;
 static unsigned int rgs_devpix[RGS_TEXD * RGS_TEXD] __attribute__((aligned(64)));
 static int          rgs_visframe = 0;	// our own vis counter (SW path not running)
 
+#ifdef TASTEST
 // Per-frame diagnostics, logged to stdio (PCSX2 emulog) periodically.
 static int   rgs_dbg_visit, rgs_dbg_clip, rgs_dbg_tris, rgs_dbg_frame;
 static int   rgs_dbg_rejnear, rgs_dbg_rejside;
 static float rgs_dbg_wmin, rgs_dbg_wmax;
+#define DBG(x) x
+#else
+#define DBG(x)
+#endif
 
 // One polygon vertex carried through clipping: homogeneous clip coords (for the
 // plane tests), the renderer-world position we actually emit, and texture ST.
@@ -143,24 +148,24 @@ static void emit_surface(model_t *m, msurface_t *surf)
 
         a[i].cx = clip[0]; a[i].cy = clip[1]; a[i].cz = clip[2]; a[i].cw = clip[3];
         a[i].ex = pos[0];  a[i].ey = pos[1];  a[i].ez = pos[2];
-        if (clip[3] < rgs_dbg_wmin) rgs_dbg_wmin = clip[3];
-        if (clip[3] > rgs_dbg_wmax) rgs_dbg_wmax = clip[3];
+        DBG(if (clip[3] < rgs_dbg_wmin) rgs_dbg_wmin = clip[3]);
+        DBG(if (clip[3] > rgs_dbg_wmax) rgs_dbg_wmax = clip[3]);
         // ST in texels (texinfo maps world->texel); scaled to tile the 64px tex.
         a[i].s = (p[0]*v0[0] + p[1]*v0[1] + p[2]*v0[2] + v0[3]) * (1.0f/64.0f);
         a[i].t = (p[0]*v1[0] + p[1]*v1[1] + p[2]*v1[2] + v1[3]) * (1.0f/64.0f);
     }
 
-    rgs_dbg_visit++;
+    DBG(rgs_dbg_visit++);
 
     // Clip against near (w>=eps), right (x<=w), left (x>=-w), top (y<=w),
     // bottom (y>=-w). Ping-pong a<->b; the result ends up in b after 5 passes.
-    cnt = clip_poly(a, n,    0.0f,  0.0f, 1.0f, -RGS_WNEAR, b); if (cnt < 3) { rgs_dbg_clip++; rgs_dbg_rejnear++; return; }
-    cnt = clip_poly(b, cnt, -1.0f,  0.0f, 1.0f,  0.0f, a);      if (cnt < 3) { rgs_dbg_clip++; rgs_dbg_rejside++; return; }
-    cnt = clip_poly(a, cnt,  1.0f,  0.0f, 1.0f,  0.0f, b);      if (cnt < 3) { rgs_dbg_clip++; rgs_dbg_rejside++; return; }
-    cnt = clip_poly(b, cnt,  0.0f, -1.0f, 1.0f,  0.0f, a);      if (cnt < 3) { rgs_dbg_clip++; rgs_dbg_rejside++; return; }
-    cnt = clip_poly(a, cnt,  0.0f,  1.0f, 1.0f,  0.0f, b);      if (cnt < 3) { rgs_dbg_clip++; rgs_dbg_rejside++; return; }
+    cnt = clip_poly(a, n,    0.0f,  0.0f, 1.0f, -RGS_WNEAR, b); if (cnt < 3) { DBG(rgs_dbg_clip++); DBG(rgs_dbg_rejnear++); return; }
+    cnt = clip_poly(b, cnt, -1.0f,  0.0f, 1.0f,  0.0f, a);      if (cnt < 3) { DBG(rgs_dbg_clip++); DBG(rgs_dbg_rejside++); return; }
+    cnt = clip_poly(a, cnt,  1.0f,  0.0f, 1.0f,  0.0f, b);      if (cnt < 3) { DBG(rgs_dbg_clip++); DBG(rgs_dbg_rejside++); return; }
+    cnt = clip_poly(b, cnt,  0.0f, -1.0f, 1.0f,  0.0f, a);      if (cnt < 3) { DBG(rgs_dbg_clip++); DBG(rgs_dbg_rejside++); return; }
+    cnt = clip_poly(a, cnt,  0.0f,  1.0f, 1.0f,  0.0f, b);      if (cnt < 3) { DBG(rgs_dbg_clip++); DBG(rgs_dbg_rejside++); return; }
 
-    rgs_dbg_tris += cnt - 2;
+    DBG(rgs_dbg_tris += cnt - 2);
     for (i = 1; i + 1 < cnt; ++i)
         RN_AddTri(b[0].ex,   b[0].ey,   b[0].ez,   b[0].s,   b[0].t,
                   b[i].ex,   b[i].ey,   b[i].ez,   b[i].s,   b[i].t,
@@ -255,9 +260,9 @@ void RGS_RenderWorld(void)
     if (!m)
         return;
 
-    rgs_dbg_visit = rgs_dbg_clip = rgs_dbg_tris = 0;
-    rgs_dbg_rejnear = rgs_dbg_rejside = 0;
-    rgs_dbg_wmin = 1e9f; rgs_dbg_wmax = -1e9f;
+    DBG(rgs_dbg_visit = rgs_dbg_clip = rgs_dbg_tris = 0);
+    DBG(rgs_dbg_rejnear = rgs_dbg_rejside = 0);
+    DBG(rgs_dbg_wmin = 1e9f); DBG(rgs_dbg_wmax = -1e9f);
 
     // The native projection's vertical fov reads much narrower than Quake's, so
     // widen it for the HW path (the value the user dialed in).
@@ -302,10 +307,12 @@ void RGS_RenderWorld(void)
     RN_FrameEnd();
     rgs_drew_world = 1;
 
-    // Log to stdio (PCSX2 emulog) every ~120 frames: how many surfaces were fed
-    // to the clipper, how many got fully clipped away, and the triangle count.
+#ifdef TASTEST
+    // Log to stdio (PCSX2 emulog) every ~120 frames: surfaces fed to the clipper,
+    // how many got fully clipped away (near vs side), the triangle count, w-range.
     if (++rgs_dbg_frame % 120 == 0)
         printf("GS world: visit=%d rej(near=%d side=%d) tris=%d w[%.1f..%.1f]\n",
                rgs_dbg_visit, rgs_dbg_rejnear, rgs_dbg_rejside, rgs_dbg_tris,
                (double)rgs_dbg_wmin, (double)rgs_dbg_wmax);
+#endif
 }

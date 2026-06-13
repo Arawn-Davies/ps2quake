@@ -126,6 +126,28 @@ static void IN_PadButtons (void)
 	PADKEY(PAD_L1,       K_MOUSE2);		// secondary attack
 
 	#undef PADKEY
+
+#ifdef TASTEST
+	// Comparison build: L1+L2+SELECT replays demo1 from the start. Demos are
+	// deterministic and renderer-independent, so triggering the same demo on the
+	// software and GS-hardware ELFs shows the identical camera path -- "how it
+	// should look" vs "how it looks". (A 3-button chord so it can't fire by
+	// accident during play.)
+	{
+		const u32 chord = PAD_L1 | PAD_L2 | PAD_SELECT;
+		static int demo_armed = 0;
+
+		if ((cur & chord) == chord)
+		{
+			if (!demo_armed)
+				Cbuf_AddText ("playdemo demo1\n");
+			demo_armed = 1;
+		}
+		else
+			demo_armed = 0;
+	}
+#endif
+
 	old_pad = cur;
 }
 

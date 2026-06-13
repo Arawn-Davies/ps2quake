@@ -101,6 +101,14 @@ ifeq ($(_IOPRESET), 1)
 	 EE_CFLAGS += -D_IOPRESET
 endif
 
+# Comparison/diagnostics build -- opt-in: `make TASTEST=1` (or `./build.sh ... tas`).
+# Enables the deterministic demo-replay chord (L1+L2+SELECT -> playdemo demo1, for
+# comparing the SW and GS-HW renderers on identical input) and the GS render
+# diagnostics logged to stdio. Off in normal builds (no overhead).
+ifeq ($(TASTEST), 1)
+	 EE_CFLAGS += -DTASTEST
+endif
+
 # Hardware renderer (GS/VU1/DMA) -- opt-in: build with `make R_HARDWARE=1`.
 # Links the native core (r_native.c + the draw_3D.vsm VU1 program) and routes
 # video through it instead of gsKit. Default build is unchanged (software).

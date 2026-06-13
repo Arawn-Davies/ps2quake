@@ -4,8 +4,10 @@ A native **PlayStation 2** port of id Software's **Quake**. Boots from a CD/DVD
 image, runs in **PCSX2** and on real hardware — video, sound, music, and
 controller all working.
 
-The 3D world is software-rendered today; a **GS hardware renderer** (VU1 + DMA +
-the Graphics Synthesizer) is in progress — see [`docs/gs-renderer.md`](docs/gs-renderer.md).
+Two renderers, built as separate ELFs: the shipping **software renderer**
+(`quake.elf`, complete and playable) and an in-progress **GS hardware renderer**
+(`quake-hw.elf` — VU1 + DMA + the Graphics Synthesizer), which already draws the
+world geometry on the GPU. See [`docs/gs-renderer.md`](docs/gs-renderer.md).
 
 ## Features
 
@@ -38,9 +40,14 @@ Requires **Docker** — the build runs inside the official ps2dev image (the
 `Dockerfile` adds `make`/`bash`/`xorriso`). No local toolchain needed.
 
 ```sh
-./build.sh            # -> src/bin/quake.elf  (MIPS N32 PS2 EE binary)
+./build.sh            # software renderer -> src/bin/quake.elf
+./build.sh hw         # GS hardware renderer -> src/bin/quake-hw.elf  (WIP)
 ./build.sh clean
 ```
+
+The two renderers are **separate ELFs** — each binary carries only its own
+renderer's buffers (lower RAM). `quake.elf` is the complete game; `quake-hw.elf`
+currently renders the world geometry (no HUD/entities yet).
 
 ## Making a bootable disc
 
@@ -58,26 +65,30 @@ You supply the **game data** (this repo ships none):
 Point `make_iso.sh` at the directory holding the pak(s) (and `id1/music/`):
 
 ```sh
-./make_iso.sh /path/to/quake     # -> dist/quake.iso
+./make_iso.sh /path/to/quake        # software -> dist/quake.iso
+./make_iso.sh /path/to/quake hw     # hardware -> dist/quake-hw.iso
 ```
 
-The disc lays out `SYSTEM.CNF` (boots `cdrom0:\QUAKE.ELF`), `QUAKE.ELF`,
-`id1/PAK0.PAK` (+`PAK1.PAK`), and `id1/music/*.wav`.
+The disc lays out `SYSTEM.CNF` (boots `cdrom0:\QUAKE.ELF`), `QUAKE.ELF` (the
+chosen renderer's ELF), `id1/PAK0.PAK` (+`PAK1.PAK`), and `id1/music/*.wav`.
 
 ## Running
 
-- **PCSX2** — boot `dist/quake.iso`. A PAL-region BIOS works; enable Fast Boot
-  if it drops to the system browser.
+- **PCSX2** — boot `dist/quake.iso` (or `dist/quake-hw.iso`). A PAL-region BIOS
+  works; enable Fast Boot if it drops to the system browser.
 - **Real PS2** — burn the ISO or load it with your launcher of choice. `cdfs`,
   SPU2 audio, and `libpad` all target real hardware; not yet extensively tested
   there.
 
 ## Roadmap
 
-The current bottleneck is EE software rasterization. The next major effort is a
-GS hardware geometry renderer that moves world rasterization onto the GPU
-(native 640×512, hardware Z-buffer). Full design, pipeline diagrams, and the
-milestone plan: [`docs/gs-renderer.md`](docs/gs-renderer.md).
+The software renderer is bottlenecked by EE rasterization, so the world is being
+moved onto the **GS hardware renderer** (VU1 + DMA, native 640×512, hardware
+Z-buffer). Done so far: the VU1/DMA/GS pipeline, the engine running on the native
+backend, and **world BSP geometry rendering on the GPU at ~30 fps** (vs the teens
+in software for the same scenes). Next: visibility culling, real textures,
+lightmaps, entities, and the HUD overlay. Full design, pipeline diagrams, and the
+milestone status: [`docs/gs-renderer.md`](docs/gs-renderer.md).
 
 ## Credits
 

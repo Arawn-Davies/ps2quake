@@ -1,6 +1,9 @@
 # GS Hardware Renderer — Design & Port Plan
 
-**Status:** design / not yet started (the software renderer ships today).
+**Status:** in progress — **M1, M2a, M2b done** (world geometry renders on the
+GS at ~30 fps). Built as a **separate ELF** (`quake-hw.elf`); the software
+renderer (`quake.elf`) still ships as the default. See §10 for the roadmap and
+§13 for build/run.
 **Goal:** move Quake's 3D world rasterization off the EE software renderer and
 onto the **Graphics Synthesizer (GS)**, driven by a **VU1 + DMA** geometry
 pipeline — running native 640×512, hardware-Z, textured, at a stable framerate.
@@ -269,8 +272,8 @@ flowchart TD
     subgraph VRAM["GS VRAM — 4 MB"]
         FB["Framebuffer 640×512 PSM32<br/>~1.25 MB"]
         ZB["Z-buffer 640×512 PSM32<br/>~1.25 MB"]
-        UI["2D UI buffer 512×256 PSM32<br/>~0.5 MB"]
-        TEX["Texture cache slots<br/>remaining ~1 MB"]
+        UI["2D blit buffer 512×512 PSM32<br/>~1.0 MB (holds 384×268 frame)"]
+        TEX["Texture cache slots<br/>remaining ~0.5 MB (M3 will need paging)"]
     end
 ```
 
@@ -325,34 +328,43 @@ sequenceDiagram
 - **Keep** Quake's BSP/PVS, entity management, server, and **all 2D drawing** —
   HUD/console/menu still render into the 8-bit `vid.buffer`, which is handed to
   `RN_Draw2D` as the overlay (mirrors doomgeneric's `DG_ScreenBuffer` path).
-- **Build system:** add `-ldraw -lgraph -lpacket2 -ldma -lpacket` (+ keep
-  `-lgskit`/`-ldmakit` only if the software path is retained behind a cvar), and
-  a `dvp-as` rule to assemble `draw_3D.vsm` → `.vudata` (the doomgeneric Makefile
-  shows the exact rule). The GL backend is C++, but our feeder can stay C if we
-  keep the PS2SDK draw headers isolated in `r_native.c` (as doomgeneric does).
-- **Cvar toggle** `r_hardware` (default off until parity) so the software
-  renderer remains the safe fallback during development.
+- **Build system:** the hardware renderer is gated at **compile time**
+  (`make R_HARDWARE=1`), which links `-ldraw -lgraph -lmath3d -lpacket2 -ldma`,
+  adds the `dvp-as` rule for `draw_3D.vsm` → `.vudata`, and pulls in
+  `r_native.c`/`r_gs.c`. The feeder (`r_gs.c`) stays C; PS2SDK draw headers are
+  isolated in `r_native.c` so they don't clash with Quake's types.
+- **Two ELFs, not a runtime toggle.** Software → `quake.elf`, hardware →
+  `quake-hw.elf`. Keeping them separate avoids a runtime GS-ownership swap
+  (gsKit vs. libgraph each own the GS at init) **and** saves RAM — each binary
+  only carries its own renderer's buffers. Selection is "which ELF you boot"
+  (`./make_iso.sh <pakdir> hw` builds the hardware disc). A future in-disc boot
+  menu (à la the doomgeneric/ps2oom debug-screen + pad selector) could pick
+  between them, but isn't needed for development.
 
 ---
 
 ## 10. Milestone roadmap
 
 Each milestone **builds and boots** to a visible result — the incremental,
-testable cadence the software experiments lacked.
+testable cadence the software experiments lacked. Green = done.
 
 ```mermaid
 flowchart TD
-    M1["M1 · Foundation<br/>copy r_native.c + draw_3D.vsm,<br/>Makefile libs + dvp-as rule,<br/>clear screen + 1 test triangle"]
-    M2["M2 · World geometry<br/>RGL feeder walks BSP,<br/>emits surfaces flat-shaded<br/>(no textures yet)"]
+    M1["✅ M1 · Foundation<br/>r_native.c + draw_3D.vsm in tree,<br/>Makefile libs + dvp-as rule,<br/>checkerboard test triangle (rntest.elf)"]
+    M2a["✅ M2a · Engine on backend<br/>R_HARDWARE build runs the engine<br/>via r_native (gsKit retired);<br/>software frame blitted by RN_Draw2D"]
+    M2b["✅ M2b · World geometry<br/>r_gs.c walks BSP, emits all world<br/>surfaces as GS triangles + dev grid,<br/>camera from r_refdef, ~30 fps"]
+    M2c["M2c · Culling + FOV<br/>PVS/frustum cull the surface set;<br/>drive FOV from r_refdef.fov_x"]
     M3["M3 · Textures<br/>palette→RGBA tiles,<br/>VRAM cache, per-texture batch"]
     M4["M4 · Lighting<br/>phase 1 per-vertex light<br/>from lightmaps"]
     M5["M5 · Entities<br/>alias models (monsters/items/weapon)<br/>→ RN_AddTri"]
     M6["M6 · Specials<br/>sky, liquids/warp, particles"]
-    M7["M7 · HUD overlay<br/>RN_Draw2D of Quake 2D buffer,<br/>menu/console/intermission"]
-    M8["M8 · Polish<br/>true lightmaps (phase 2),<br/>VRAM paging, r_hardware default on"]
-    M1 --> M2 --> M3 --> M4 --> M5 --> M6 --> M7 --> M8
+    M7["M7 · HUD overlay<br/>RN_Draw2D of Quake 2D buffer,<br/>menu/console/intermission keyed on top"]
+    M8["M8 · Polish<br/>true lightmaps (phase 2),<br/>VRAM paging"]
+    M1 --> M2a --> M2b --> M2c --> M3 --> M4 --> M5 --> M6 --> M7 --> M8
 
     style M1 fill:#143d14,stroke:#7d7,color:#cfe
+    style M2a fill:#143d14,stroke:#7d7,color:#cfe
+    style M2b fill:#143d14,stroke:#7d7,color:#cfe
 ```
 
 ---
@@ -368,24 +380,46 @@ flowchart TD
 | Overdraw / fillrate at 640×512 | low–med | GS fillrate is high; Z-test rejects early; measure |
 | Water/sky correctness (warp, scroll) | med | dedicated passes, deferred to M6 |
 | C/C++ link (PS2SDK draw is C++-friendly) | low | isolate PS2SDK headers in `r_native.c`, keep feeder C |
-| Two renderers in one tree | low | `r_hardware` cvar; software path stays as fallback |
+| Two renderers in one tree | low | separate ELFs (`quake.elf` / `quake-hw.elf`); software stays the default |
 
 ---
 
 ## 12. File manifest
 
-New files (ported/written under `src/`):
+Files under `src/` (status as of M2b):
 
-| file | origin | role |
+| file | status | role |
 |---|---|---|
-| `r_native.c` | copy from doomgeneric, **near-verbatim** | GS/VU1/DMA hardware core + `RN_*` API |
-| `draw_3D.vsm` | copy from doomgeneric, **verbatim** | VU1 transform microprogram |
-| `r_gs.c` (new) | write for Quake | BSP feeder: surfaces/entities → `RN_*` |
-| `Makefile` | edit | add draw/graph/packet2/dma libs + `dvp-as` rule |
-| `screen.c` / `vid_ps2.c` | edit | route 3D to feeder, 2D buffer to `RN_Draw2D` |
+| `r_native.c` | in tree (ported from doomgeneric, lightly tweaked) | GS/VU1/DMA hardware core + `RN_*` API; full Euler camera; 512×512 2D blit tex |
+| `draw_3D.vsm` | in tree (verbatim) | VU1 transform/clip/perspective microprogram |
+| `r_gs.c` | new, in tree | BSP feeder: world surfaces → `RN_AddTri` (M2b). Entities/sky/water later |
+| `rntest_main.c` + `Makefile.rntest` | in tree | standalone M1 smoke test → `bin/rntest.elf` |
+| `Makefile` | edited | `R_HARDWARE=1` gate: links the core + draw libs + `dvp-as` rule; outputs `quake-hw.elf` |
+| `vid_ps2.c` | edited | `R_HARDWARE`: `RN_Init`/`RGS_Init` instead of gsKit; present via `RN_Draw2D` / world-drawn flag |
+| `r_main.c` | edited | `R_HARDWARE`: `R_RenderView` calls `RGS_RenderWorld` |
+| `build.sh` / `make_iso.sh` | edited | `./build.sh hw` and `./make_iso.sh <pak> hw` build the hardware ELF/ISO |
 
 Reference sources (read-only):
-`/home/arawn/src/doomgeneric/ps2/{r_native.c,r_gl.c,draw_3D.vsm,doomgeneric_ps2_gl.cpp,Makefile}`.
+`/home/arawn/src/doomgeneric/ps2/{r_native.c,r_gl.c,draw_3D.vsm,doomgeneric_ps2_gl.cpp,Makefile}`;
+GLQuake `gl_rsurf.c`/`gl_rmain.c` (for M3 textures + lightmaps).
+
+---
+
+## 13. Build & run
+
+```sh
+# Software renderer (default) -> src/bin/quake.elf
+./build.sh
+./make_iso.sh /path/to/quake          # -> dist/quake.iso
+
+# GS hardware renderer        -> src/bin/quake-hw.elf
+./build.sh hw
+./make_iso.sh /path/to/quake hw       # -> dist/quake-hw.iso
+```
+
+Both discs boot the chosen ELF as `cdrom0:\QUAKE.ELF` (one `SYSTEM.CNF`). The
+hardware ELF currently renders the world geometry (dev-grid textured, no HUD/
+entities yet); the software ELF is the complete, playable game.
 
 ---
 

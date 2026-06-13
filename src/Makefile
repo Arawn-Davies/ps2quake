@@ -105,6 +105,7 @@ endif
 # video through it instead of gsKit. Default build is unchanged (software).
 EE_DVP ?= $(PS2SDK)/../dvp/bin/dvp-as
 ifeq ($(R_HARDWARE), 1)
+	 EE_BIN    = bin/quake-hw.elf
 	 EE_OBJS  += r_native.o draw_3D.o r_gs.o
 	 EE_CFLAGS += -DR_HARDWARE
 	 EE_LIBS  += -ldraw -lgraph -lmath3d -lpacket2 -ldma

@@ -12,20 +12,33 @@
 #   /id1/PAK0.PAK [PAK1.PAK]
 #
 # Usage:
-#   ./make_iso.sh <path-to-dir-with-PAK0.PAK[/PAK1.PAK]>
+#   ./make_iso.sh <path-to-dir-with-PAK0.PAK[/PAK1.PAK]>        # software ELF
+#   ./make_iso.sh <path-to-dir-with-PAK0.PAK[/PAK1.PAK]> hw     # GS hardware ELF
 # e.g.
 #   ./make_iso.sh /mnt/c/Users/azama/Downloads/quake
+#   ./make_iso.sh /mnt/c/Users/azama/Downloads/quake hw
 #
-# Output: dist/quake.iso
+# Output: dist/quake.iso (software) or dist/quake-hw.iso (hardware). Either way
+# the chosen ELF is placed on the disc as QUAKE.ELF (so one SYSTEM.CNF works).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 IMAGE=ps2dock:local
 PAKDIR="${1:-$ROOT/id1}"
 STAGE="$ROOT/dist/iso"
-OUT="$ROOT/dist/quake.iso"
 
-[ -f "$ROOT/src/bin/quake.elf" ] || { echo "!! src/bin/quake.elf missing -- run ./build.sh first"; exit 1; }
+# Renderer select: second arg "hw" picks the hardware ELF + hardware ISO name.
+if [ "${2:-}" = "hw" ]; then
+    ELF_SRC="$ROOT/src/bin/quake-hw.elf"
+    OUT="$ROOT/dist/quake-hw.iso"
+    ISONAME="quake-hw.iso"
+else
+    ELF_SRC="$ROOT/src/bin/quake.elf"
+    OUT="$ROOT/dist/quake.iso"
+    ISONAME="quake.iso"
+fi
+
+[ -f "$ELF_SRC" ] || { echo "!! $ELF_SRC missing -- run ./build.sh ${2:-} first"; exit 1; }
 
 # Locate PAK0.PAK (case-insensitive) in the supplied directory.
 pak0="$(find "$PAKDIR" -maxdepth 1 -iname 'pak0.pak' | head -1 || true)"
@@ -36,7 +49,7 @@ echo ">> staging ISO tree in $STAGE"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/id1"
 cp "$ROOT/SYSTEM.CNF"          "$STAGE/SYSTEM.CNF"
-cp "$ROOT/src/bin/quake.elf"   "$STAGE/QUAKE.ELF"
+cp "$ELF_SRC"                  "$STAGE/QUAKE.ELF"
 cp "$pak0"                     "$STAGE/id1/PAK0.PAK"
 [ -n "$pak1" ] && cp "$pak1"   "$STAGE/id1/PAK1.PAK"
 
@@ -56,7 +69,7 @@ mkdir -p "$ROOT/dist"
 # -as mkisofs: plain ISO9660 (level: allow our 8.3 names). PS2 cdvd/cdfs read
 # standard ISO9660; cdfs is case-insensitive so lowercase cdfs:/ paths match.
 docker run --rm -v "$ROOT":/work -w /work "$IMAGE" \
-    xorriso -as mkisofs -iso-level 2 -l -o dist/quake.iso dist/iso
+    xorriso -as mkisofs -iso-level 2 -l -o "dist/$ISONAME" dist/iso
 
-echo ">> done: dist/quake.iso"
+echo ">> done: $OUT"
 ls -la "$OUT"

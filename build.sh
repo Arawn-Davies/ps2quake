@@ -6,10 +6,14 @@
 # runs `make` in src/. Output: src/bin/quake.elf  (a MIPS N32 PS2 EE binary).
 #
 # Usage:
-#   ./build.sh            # build src/bin/quake.elf
+#   ./build.sh            # software renderer -> src/bin/quake.elf
+#   ./build.sh hw         # GS hardware renderer -> src/bin/quake-hw.elf
 #   ./build.sh clean      # remove build artifacts
 #   ./build.sh <target>   # run an arbitrary make target (e.g. pack)
 #
+# Software and hardware are separate ELFs (separate renderers, so each binary
+# only carries its own buffers). Pick which one to put on the disc with
+# make_iso.sh.
 set -euo pipefail
 
 IMAGE=ps2dock:local
@@ -21,14 +25,19 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     docker build -t "$IMAGE" "$ROOT"
 fi
 
-# bin/ must exist for the linker output (EE_BIN = bin/quake.elf).
+# bin/ must exist for the linker output.
 mkdir -p "$ROOT/src/bin"
 
-# Force a clean build for the default target: incremental make over the
-# WSL2/Docker bind mount can't be trusted to relink (mtime granularity means
-# a fresh .o can look older than the ELF, so the link is silently skipped and
-# you ship a stale binary). A full rebuild of this small tree costs seconds.
-if [ "$#" -eq 0 ]; then
+# A clean build is forced whenever the renderer (compile-time gated) is built,
+# because incremental make over the WSL2/Docker bind mount can't be trusted to
+# relink, and toggling -DR_HARDWARE must recompile the gated files. A full
+# rebuild of this small tree costs seconds.
+OUT="src/bin/quake.elf"
+if [ "${1:-}" = "hw" ]; then
+    echo ">> running 'make clean && make R_HARDWARE=1' in src/ ..."
+    docker run --rm -v "$ROOT":/work -w /work/src "$IMAGE" sh -c 'make R_HARDWARE=1 clean >/dev/null 2>&1; make R_HARDWARE=1'
+    OUT="src/bin/quake-hw.elf"
+elif [ "$#" -eq 0 ]; then
     echo ">> running 'make clean && make' in src/ ..."
     docker run --rm -v "$ROOT":/work -w /work/src "$IMAGE" sh -c 'make clean >/dev/null 2>&1; make'
 else
@@ -37,6 +46,6 @@ else
 fi
 
 if [ "${1:-}" != "clean" ]; then
-    echo ">> done: src/bin/quake.elf"
-    file "$ROOT/src/bin/quake.elf" 2>/dev/null || true
+    echo ">> done: $ROOT/$OUT"
+    file "$ROOT/$OUT" 2>/dev/null || true
 fi
